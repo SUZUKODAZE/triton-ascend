@@ -317,9 +317,13 @@ mlir::Value InterCoreTransferAndSyncPass::normalizeIfNeeded(OpBuilder &builder, 
     int64_t iniM = origTensorType.getDimSize(0);
     int64_t iniN = origTensorType.getDimSize(1);
     Type elemType = origTensorType.getElementType();
-
-    builder.setInsertionPointAfter(origValue.getDefiningOp());
-
+    if (isa<mlir::BlockArgument>(origValue)) {
+        auto [originProdStart, originProdEnd] = getBlockStartEnd(originBlockId, module);
+        builder.setInsertionPointAfter(originProdEnd);
+    } else {
+        builder.setInsertionPointAfter(origValue.getDefiningOp());
+    }
+    
     auto floatElemTy = cast<FloatType>(elemType);
     auto zeroConstOp = builder.create<arith::ConstantFloatOp>(
         loc, APFloat::getZero(floatElemTy.getFloatSemantics()), floatElemTy);
@@ -376,7 +380,8 @@ void InterCoreTransferAndSyncPass::Nd2NzNormalize(OpBuilder &builder, Dependency
     }
     // Step 1: Compute expected shape
     SmallVector<int64_t> expectedShape = computeExpectedShape(origValue);
-    int originBlockId = getSsbufferBlockId(origValue.getDefiningOp());
+    
+    int originBlockId = dep.iniProducerBlockId;
     // Step 2: If shapes match, return original value
     if (!isShapeExpected(origValue, expectedShape)) {
         newValue = normalizeIfNeeded(builder, dep, loc, origValue, expectedShape, originBlockId);
@@ -400,7 +405,13 @@ void InterCoreTransferAndSyncPass::Nd2NzNormalize(OpBuilder &builder, Dependency
     auto type3D = RankedTensorType::get(shape3D, elemType);
     auto typeTrans = RankedTensorType::get(shapeTrans, elemType);
     auto typeFinal = RankedTensorType::get(shapeFinal, elemType);
-    builder.setInsertionPointAfter(newValue.getDefiningOp());
+    if (newValue.getDefiningOp()) {
+        builder.setInsertionPointAfter(newValue.getDefiningOp());
+    } else {
+        auto [newProdStart, newProdEnd] = getBlockStartEnd(originBlockId, module);
+        builder.setInsertionPointAfter(newProdEnd);
+    }
+    
     auto reshape3Dcst = builder.create<arith::ConstantOp>(loc, builder.getI64TensorAttr(shape3D));
     auto reshape3DOp = builder.create<tensor::ReshapeOp>(loc, type3D, newValue, reshape3Dcst);
 

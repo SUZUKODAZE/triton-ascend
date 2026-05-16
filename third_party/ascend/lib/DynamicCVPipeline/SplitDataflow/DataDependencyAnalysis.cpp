@@ -24,6 +24,7 @@
 #include "ascend/include/DynamicCVPipeline/Common/MemoryEffectsTracker.h"
 
 #include "mlir/Analysis/AliasAnalysis.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -83,6 +84,56 @@ bool DataDependencyAnalysisPass::isControlFlowOp(mlir::Operation *op)
     if (!op)
         return false;
     return isa<scf::ForOp>(op) || isa<scf::IfOp>(op) || isa<scf::WhileOp>(op) || isa<scf::YieldOp>(op);
+}
+
+// Helper: Check if value is a valid tensor for dependency analysis
+// Returns true if value is TensorType and not defined by EmptyOp/FillOp
+bool DataDependencyAnalysisPass::isValidTensorForDependency(mlir::Value value)
+{
+    if (!dyn_cast<mlir::TensorType>(value.getType())) {
+        return false;
+    }
+    Operation *defOp = value.getDefiningOp();
+    if (defOp && isa<tensor::EmptyOp, linalg::FillOp>(defOp)) {
+        return false;
+    }
+    return true;
+}
+
+// Helper: Check if value is a arg in func which is from gm
+bool DataDependencyAnalysisPass::isFuncOpArg(mlir::Value value)
+{
+    if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+        mlir::Block *ownerBlock = blockArg.getOwner();
+
+        if (auto funcOp = dyn_cast<mlir::func::FuncOp>(ownerBlock->getParentOp())) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Helper: Check if value is a iterarg in scf.for
+std::pair<scf::ForOp, int> DataDependencyAnalysisPass::isScfForOpIterArg(mlir::Value value)
+{
+    auto blockArg = dyn_cast<mlir::BlockArgument>(value);
+    if (!blockArg) {
+        return {nullptr, -1};
+    }
+    Block *block = blockArg.getOwner();
+    if (!block || !block->getParent()) {
+        return {nullptr, -1};
+    }
+    auto forOp = dyn_cast<scf::ForOp>(block->getParentOp());
+    if (!forOp) {
+        return {nullptr, -1};
+    }
+    unsigned argIndex = blockArg.getArgNumber();
+    if (argIndex > 0) {
+        return {forOp, argIndex - 1};
+    }
+
+    return {nullptr, -1};
 }
 
 // Helper: Build and record BlockInfo
@@ -184,6 +235,58 @@ void DataDependencyAnalysisPass::collectDepInfo(mlir::Value depvalue, Dependency
     dependencies.push_back(depInfo);
 }
 
+int DataDependencyAnalysisPass::getAvaliableBlockId()
+{
+    int maxBlockId = -1;
+    module.walk([&](Operation *op) {
+        int currentId = getSsbufferBlockId(op);
+        if (currentId > maxBlockId) {
+            maxBlockId = currentId;
+        }
+    });
+    return maxBlockId + 1;
+}
+
+void DataDependencyAnalysisPass::processIterArgInputDependencies(scf::ForOp forOp, 
+    mlir::Value value, int iterArgIndex, llvm::SmallVector<DependencyInfo> &dependencies, 
+    int processingBlockId, DataDependencyInfo &info)
+{
+    mlir::Value initValue = forOp.getInits()[iterArgIndex];
+    Operation *initDefOp = initValue.getDefiningOp();
+    if (!initDefOp) {
+        return;
+    }
+    auto initDefReuslt = dyn_cast<mlir::OpResult>(initValue);
+    auto initCoreType = getCoreTypeWithIndex(initDefOp, initDefReuslt ? initDefReuslt.getResultNumber() : 0);
+    auto yieldCoreType = getCoreTypeWithIndex(forOp, iterArgIndex);
+    if (initCoreType == "VECTOR" && yieldCoreType == "VECTOR") {
+        int newId = getAvaliableBlockId();
+        // Insert arith::ConstantOp at the beginning of forOp's body
+        OpBuilder builder(forOp);
+        Block &bodyBlock = forOp.getRegion().front();
+        builder.setInsertionPointToStart(&bodyBlock);
+        Location loc = forOp.getLoc();
+        auto constOp = builder.create<arith::ConstantIntOp>(loc, 0, 32);
+
+        // Set block_id and core_type attributes
+        constOp->setAttr(kBlockIdAttr, IntegerAttr::get(IntegerType::get(builder.getContext(), 32), newId));
+        constOp->setAttr(kCoreTypeAttr, StringAttr::get(builder.getContext(), "VECTOR"));
+
+        DependencyInfo depInfo;
+        depInfo.type = DependencyType::VectorToCube;
+        depInfo.value = value;
+        depInfo.iniProducerBlockId = newId;
+        depInfo.iniConsumerBlockId = processingBlockId;
+        depInfo.producerBlockId = newId;
+        depInfo.consumerBlockId = processingBlockId;
+        dependencies.push_back(depInfo);
+    } else if (initCoreType == "VECTOR" && yieldCoreType == "CUBE") {
+        LOG_DEBUG("[warning] iterarg init core_type conflict with yield!!!!!!\n");
+    } else if (initCoreType == "CUBE" && yieldCoreType == "VECTOR") {
+        LOG_DEBUG("[warning] iterarg init core_type conflict with yield!!!!!!\n");
+    }
+}
+
 // Analyze V->C
 void DataDependencyAnalysisPass::analyzeExternalInputs(DataDependencyInfo &info)
 {
@@ -196,18 +299,19 @@ void DataDependencyAnalysisPass::analyzeExternalInputs(DataDependencyInfo &info)
             continue;
         LOG_DEBUG("Analyzing external inputs for Cube Block ID: " << id << "\n");
         for (mlir::Value input : blockInfo.inputs) {
+            // Check if input is a value which can be produced by CUBE
+            if (!isValidTensorForDependency(input)) {
+                LOG_DEBUG("Warning: [v->c] Input value is not a valid tensor for dependency analysis.\n");
+                continue;
+            }
             // Check if input is a func.func blockarg.
-            if (auto arg = mlir::dyn_cast<mlir::BlockArgument>(input)) {
+            if (isFuncOpArg(input)) {
                 LOG_DEBUG("Warning: [v->c] Input value is a function parameter.\n");
                 continue;
             }
-            // Check if input is a value which can be produced by CUBE
-            if (!dyn_cast<mlir::TensorType>(input.getType())) {
-                LOG_DEBUG("Warning: [v->c] Input value is not TensorType\n");
-                continue;
-            }
-            if (isa<tensor::EmptyOp, linalg::FillOp>(input.getDefiningOp())) {
-                LOG_DEBUG("Warning: [v->c] Input value is defined by tensor::EmptyOp/linalg::FillOp.\n");
+            auto [iterArgForOp, iterArgIndex] = isScfForOpIterArg(input);
+            if (iterArgIndex != -1) {
+                processIterArgInputDependencies(iterArgForOp, input, iterArgIndex, v2cDependencies, blockInfo.blockId, info);
                 continue;
             }
 
@@ -251,13 +355,9 @@ void DataDependencyAnalysisPass::analyzeExternalOutputs(DataDependencyInfo &info
             continue;
 
         for (mlir::Value output : blockInfo.outputs) {
-            // Check if input is a value which can be produced by VECTOR
-            if (!dyn_cast<mlir::TensorType>(output.getType())) {
-                LOG_DEBUG("Warning: ExternalOutput is not TensorType\n");
-                continue;
-            }
-            if (isa<tensor::EmptyOp, linalg::FillOp>(output.getDefiningOp())) {
-                LOG_DEBUG("Warning: [c->v] output value is defined by tensor::EmptyOp/linalg::FillOp.\n");
+            // Check if output is a value which can be produced by CUBE
+            if (!isValidTensorForDependency(output)) {
+                LOG_DEBUG("Warning: [c->v] Output value is not a valid tensor for dependency analysis.\n");
                 continue;
             }
 
