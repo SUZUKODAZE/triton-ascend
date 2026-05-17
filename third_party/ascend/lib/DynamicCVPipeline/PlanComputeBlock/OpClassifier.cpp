@@ -401,8 +401,6 @@ int OpClassifierPass::patternMatchCUBE()
     return 0;
 }
 
-<<<<<<< HEAD
-=======
 // Helper: Check if a value is a scalar (not a tensor type)
 static bool isScalarType(Value value)
 {
@@ -446,6 +444,9 @@ static void findIterArgUpstreamOps(Value def, llvm::SmallVectorImpl<Operation *>
     // Get the iter_arg index from block argument
     unsigned argIdx = blockArg.getArgNumber();
 
+    LLVM_DEBUG(DBGS() << "[fqf] blockArg.getArgNumber " << argIdx << ": " << def << "\n");
+    LLVM_DEBUG(DBGS() << "[fqf] forOp.getInitArgs().size() " << forOp.getInitArgs().size() << "\n");
+
     // Get the iter_arg and check its type - must be scalar (not tensor)
     // The init value is at forOp.getInitArgs()[argIdx]
     if (argIdx > forOp.getInitArgs().size() || argIdx == 0)
@@ -479,7 +480,6 @@ static void findIterArgUpstreamOps(Value def, llvm::SmallVectorImpl<Operation *>
     }
 }
 
->>>>>>> 49ea1cec5 (fix: fix issue)
 // Helper function to get upstream operations based on both SSA and memory dependencies
 void OpClassifierPass::getUpstreamOpsWithMemoryDeps(Operation *cur, llvm::SmallVectorImpl<Operation *> &upstreamOps)
 {
@@ -487,8 +487,12 @@ void OpClassifierPass::getUpstreamOpsWithMemoryDeps(Operation *cur, llvm::SmallV
     for (Value operand : cur->getOperands()) {
         Operation *def = operand.getDefiningOp();
         if (def && def != cur) {
+            // Check if this def is an scf.for iter_arg that is a scalar
             LLVM_DEBUG(DBGS() << "push op: " << *def << "\n");
             upstreamOps.push_back(def);
+        }
+        if (isScalarIterArgOp(operand)) {
+            findIterArgUpstreamOps(operand, upstreamOps);
         }
     }
     if (!isa<bufferization::ToTensorOp>(cur)) {
@@ -716,10 +720,8 @@ void OpClassifierPass::markFillOpsAsCube()
             LLVM_DEBUG(DBGS() << "\tfill-cube (outs is CUBE): " << *op << "\n");
             opCoreTypes[op] = OP_CUBE_ONLY;
         }
-<<<<<<< HEAD
-=======
 
-        // Case 3: handle fill op in scf.if with all CUBE ops, Vector ops are automatically marked as vector.
+        // Case 3: handle fill op in scf.if with all CUBE ops
         handleFillInScfIf(op);
     }
 }
@@ -727,6 +729,9 @@ void OpClassifierPass::markFillOpsAsCube()
 // Helper: Handle fill op in scf.if - if all ops in scf.if are CUBE, mark scf.if and propagate upstream
 void OpClassifierPass::handleFillInScfIf(Operation *fillOp)
 {
+    if (!isa<linalg::FillOp>(fillOp))
+        return;
+
     Operation *parentOp = fillOp->getParentOp();
     auto ifOp = dyn_cast<scf::IfOp>(parentOp);
     if (!ifOp)
@@ -792,7 +797,6 @@ void OpClassifierPass::propagateCubeUpstreamForOp(Operation *startOp)
             opCoreTypes[upstreamOp] = OP_CUBE_ONLY;
             cubeQueue.push(upstreamOp);
         }
->>>>>>> 49ea1cec5 (fix: fix issue)
     }
 }
 
@@ -822,7 +826,8 @@ int OpClassifierPass::propagateVectorUpstream()
         vecQueue.pop();
         // Skip builtin.module, func.func, and func.return operations
         if (isa<ModuleOp, func::FuncOp, func::ReturnOp>(cur) ||
-            (isa<memref::CopyOp, memref::AllocaOp>(cur) && opCoreTypes[cur] == OP_CUBE_ONLY)) {
+            (isa<memref::CopyOp, memref::AllocaOp>(cur) && opCoreTypes[cur] == OP_CUBE_ONLY))
+        {
             continue;
         }
         LLVM_DEBUG(DBGS() << "vec-def: " << *cur << "\n");
