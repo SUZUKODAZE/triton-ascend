@@ -2,6 +2,12 @@
 #include "ascend/include/TritonToLinalg/Passes.h"
 #include "ascend/include/TritonControlFlowOpt/Passes.h"
 #include "ascend/include/DiscreteMaskAccessConversion/Passes.h"
+#include "ascend/include/DynamicCVPipeline/SplitDataflow/AddBlockIdForControlOps.h"
+#include "ascend/include/DynamicCVPipeline/SplitDataflow/DataDependencyAnalysis.h"
+#include "ascend/include/DynamicCVPipeline/SplitDataflow/InterCoreTransferAndSync.h"
+#include "ascend/include/DynamicCVPipeline/SplitDataflow/MarkMainLoop.h"
+#include "ascend/include/DynamicCVPipeline/SplitDataflow/PreserveControlAttrsCanonicalize.h"
+#include "ascend/include/DynamicCVPipeline/SplitDataflow/SeparateCVScope.h"
 #include "ascend/include/DynamicCVPipeline/AddControlFlowCondition.h"
 #include "ascend/include/DynamicCVPipeline/AnalyzeDataFlow.h"
 #include "ascend/include/DynamicCVPipeline/AllocMultiCache/AddMultiBufferOuterScope.h"
@@ -99,6 +105,12 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
 
   // DynamicCVPipeline passes
   mlir::triton::registerAddDynamicCVPipelinePasses();
+  mlir::triton::registerAddBlockIdForControlOpsPasses();
+  mlir::triton::registerDataDependencyAnalysisPasses();
+  mlir::triton::registerInterCoreTransferAndSyncPasses();
+  mlir::triton::registerMarkMainLoopPasses();
+  mlir::triton::registerSeparateCVScopePasses();
+  mlir::triton::registerPreserveControlAttrsCanonicalizePasses();
   mlir::triton::registerAddControlFlowConditionPasses();
   mlir::triton::registerAddMultiBufferOuterScopePasses();
   mlir::triton::registerRemoveSsbufAttrPasses();

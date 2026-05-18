@@ -460,6 +460,11 @@ std::unique_ptr<OperationPass<ModuleOp>> createDataDependencyAnalysisPass()
     return std::make_unique<DataDependencyAnalysisPass>();
 }
 
+void registerDataDependencyAnalysisPasses()
+{
+  registerPass([]() -> std::unique_ptr<mlir::Pass> { return createDataDependencyAnalysisPass(); });
+}
+
 // Helper: Get BlockId
 int getSsbufferBlockId(Operation *op)
 {
