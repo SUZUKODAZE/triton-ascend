@@ -167,17 +167,17 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
         if metadata["enable_dynamic_cv_pipeline"]:
             ascend.passes.ttir.add_dynamic_cv_pipeline(pm, compile_on_910_95)
 
-        _val = metadata.get("intra_cache_num")
-        if _val is not None:
-            ascend.passes.ttir.set_buffer_count(0, _val)
+        _intra_val = metadata.get("intra_cache_num")
+        if _intra_val is not None:
+            ascend.passes.ttir.set_buffer_count("INTRA", _intra_val)
 
-        _val = metadata.get("inter_cache_num")
-        if _val is not None:
-            ascend.passes.ttir.set_buffer_count(1, _val)
+        _inter_val = metadata.get("inter_cache_num")
+        if _inter_val is not None:
+            ascend.passes.ttir.set_buffer_count("INTER", _inter_val)
 
-        _val = metadata.get("load_cache_num")
-        if _val is not None:
-            ascend.passes.ttir.set_buffer_count(2, _val)
+        _load_val = metadata.get("load_cache_num")
+        if _load_val is not None:
+            ascend.passes.ttir.set_buffer_count("LOAD", _load_val)
 
         pm.run(mod)
 
@@ -886,6 +886,9 @@ class NPUOptions:
     add_auto_scheduling: bool = False
     enable_dynamic_cv_pipeline: bool = False
     hfusion_enable_multiple_consumer_fusion: bool = False
+    intra_cache_num: int = 0
+    inter_cache_num: int = 0
+    load_cache_num: int = 0
 
     stream: int = None
     parallel_mode: str = "simd"
