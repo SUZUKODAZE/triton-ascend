@@ -3,6 +3,7 @@
 #include "ascend/include/TritonControlFlowOpt/Passes.h"
 #include "ascend/include/DiscreteMaskAccessConversion/Passes.h"
 #include "ascend/include/DynamicCVPipeline/AddControlFlowCondition.h"
+#include "ascend/include/DynamicCVPipeline/AnalyzeDataFlow.h"
 #include "ascend/include/DynamicCVPipeline/AllocMultiCache/AddMultiBufferOuterScope.h"
 #include "ascend/include/DynamicCVPipeline/Passes.h"
 #include "ascend/include/DynamicCVPipeline/RemoveAttributes.h"
@@ -101,6 +102,7 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerAddControlFlowConditionPasses();
   mlir::triton::registerAddMultiBufferOuterScopePasses();
   mlir::triton::registerRemoveSsbufAttrPasses();
+  mlir::triton::registerAnalyzeDataFlowPasses();
 
   // TODO: register Triton & TritonGPU passes
   registry.insert<mlir::triton::TritonDialect, mlir::cf::ControlFlowDialect,
