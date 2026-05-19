@@ -162,8 +162,11 @@ static bool willCreateCycle(memref::AllocOp allocOp, FillInfo &fillInfo,
           break;
         }
       } else {
+        LOG_DEBUG("userInBlock: "<<*userInBlock);
+        LOG_DEBUG("okOp: " << *okOp);
         for (auto *userOp : bm.getOpsByBlockId(userBlockId)) {
           dfs.clear();
+          LOG_DEBUG("userOp: "<<*userOp);
           if (dfs(userOp)) {
             hasCycle = true;
             break;
@@ -225,9 +228,9 @@ static SmallVector<Operation *> collectDirectUsers(Value allocResult) {
  * @return std::optional<int> Returns common block_id if all are the same,
  *         otherwise returns std::nullopt
  */
-static std::optional<int> getCommonBlockId(ArrayRef<Operation *> ops) {
+static LogicalResult getCommonBlockId(ArrayRef<Operation *> ops, int &blockId) {
   if (ops.empty()) {
-    return std::nullopt;
+    return failure();
   }
 
   int commonId = -1;
@@ -244,7 +247,53 @@ static std::optional<int> getCommonBlockId(ArrayRef<Operation *> ops) {
       return std::nullopt;
     }
   }
-  return commonId;
+
+  if (copyBlockIds.size() > 1) {
+    LOG_DEBUG("[getCommonBlockId] Multiple block_ids found, ops: ");
+    for (Operation *op : ops) {
+      LOG_DEBUG("  " << *op);
+    }
+    return failure();
+  }
+
+  if (copyBlockIds.empty()) {
+    LOG_DEBUG("[getCommonBlockId] There are not CopyOp!");
+    for (Operation *op : ops) {
+      LOG_DEBUG("  " << *op);
+    }
+    return failure();
+  }
+
+  blockId = *copyBlockIds.begin();
+  return success();
+}
+
+static SmallVector<Operation *> collectBlockPredecessors(Value startValue, Block *block) {
+  SmallVector<Operation *> result;
+  SmallVector<Operation *> toProcess;
+
+  if (auto *condDefOp = startValue.getDefiningOp()) {
+    if (auto *ancestorInBlock = CVPipeline::getAncestorInBlock(condDefOp, block)) {
+      toProcess.push_back(ancestorInBlock);
+    }
+  }
+
+  while (!toProcess.empty()) {
+    auto *op = toProcess.pop_back_val();
+    if (llvm::is_contained(result, op)) {
+      continue;
+    }
+    result.push_back(op);
+
+    for (auto operand : op->getOperands()) {
+      if (auto *defOp = operand.getDefiningOp()) {
+        if (auto *ancestorInBlock = CVPipeline::getAncestorInBlock(defOp, block)) {
+          toProcess.push_back(ancestorInBlock);
+        }
+      }
+    }
+  }
+  return result;
 }
 
 /**
@@ -387,21 +436,29 @@ static FillInfo splitSCFIfIfNeeded(FillInfo &info) {
  *
  * @param allocOp The memref.alloc operation to process
  * @param memGraph Memory dependence graph for cycle detection
- * @return bool Returns true if unification was performed, false otherwise
+ * @return LogicalResult Returns success if unification was performed, failure otherwise
  */
-static bool tryUnifyForAlloc(memref::AllocOp allocOp, const CVPipeline::MemoryDependenceGraph &memGraph) {
+static LogicalResult tryUnifyForAlloc(memref::AllocOp allocOp, const CVPipeline::MemoryDependenceGraph &memGraph) {
   // Step1: Collect direct users (excluding linalg.fill)
   Value allocResult = allocOp.getResult();
   LOG_DEBUG("[tryUnifyForAlloc] start from allocOp: " << *allocOp);
   SmallVector<Operation *> directUsers = collectDirectUsers(allocResult);
   if (directUsers.empty()) {
-    return false;
+    return success();
   }
 
-  // Step2: Check if all direct users have the same block_id
-  std::optional<int> targetBlockId = getCommonBlockId(directUsers);
-  if (!targetBlockId.has_value()) {
-    return false;
+  // Step2: Find linalg.fill inside scf.if that uses this alloc
+  FillInfo fillInfo = findFillOpInSCFIf(allocResult);
+  if (!fillInfo.fillOp) {
+    return success();
+  }
+  LOG_DEBUG("[tryUnifyForAlloc] Found fillOp in scf.if: " << *fillInfo.parentIf);
+
+  // Step3: Check if all direct users have the same block_id
+  int targetBlockId;
+  if (failed(getCommonBlockId(directUsers, targetBlockId))) {
+    LOG_DEBUG("allocOp has copyOp from different Block");
+    return failure();
   }
 
   // Step3: Find linalg.fill inside scf.if that uses this alloc
@@ -418,20 +475,36 @@ static bool tryUnifyForAlloc(memref::AllocOp allocOp, const CVPipeline::MemoryDe
     fillInfo = splitSCFIfIfNeeded(fillInfo);
   }
 
-  // Step5: Cycle detection - check if unification would create cycle
-  if (willCreateCycle(allocOp, fillInfo, memGraph, *targetBlockId)) {
-    LOG_DEBUG("[Cycle detection] Find cycle! Did not change block_id: "<< targetBlockId);
-    return false;
-  }
+  // Step5: Collect predecessor_ops for scf.if condition
+  SmallVector<Operation *> conditionOps =
+      collectBlockPredecessors(fillInfo.parentIf.getCondition(), fillInfo.parentIf->getBlock());
 
-  // Step6: Unify block_id of alloc, scf.if, and linalg.fill
-  LOG_DEBUG("[tryUnifyForAlloc] Unifying block_id to " << *targetBlockId << " for:");
-  LOG_DEBUG("  - alloc: " << *allocOp.getOperation());
-  LOG_DEBUG("  - fillOp: " << *fillInfo.fillOp.getOperation());
-  markOpBlockId(allocOp, *targetBlockId);
-  markOpBlockId(fillInfo.fillOp, *targetBlockId);
-  markOpBlockId(fillInfo.parentIf, *targetBlockId);
-  return true;
+  // Step6: Cycle detection and block_id assignment with fallback
+  SmallVector<Operation *> coreOps = {
+      allocOp.getOperation(),
+      fillInfo.fillOp.getOperation(),
+      fillInfo.parentIf.getOperation(),
+  };
+  coreOps.append(directUsers);
+  SmallVector<Operation *> allOps = coreOps;
+  // allOps include coreOps and scf.if_condition's predecessor_ops
+  allOps.append(conditionOps);
+
+  if (willCreateCycle(allOps, memGraph, targetBlockId)) {
+    LOG_DEBUG("[Cycle detection] First time: Find cycle with conditionOps, retry without conditionOps");
+    if (willCreateCycle(coreOps, memGraph, targetBlockId)) {
+      LOG_DEBUG("[Cycle detection] Second time: Find Cycle, have unsupport IR!");
+      return failure();
+    }
+    for (auto *op : coreOps) {
+      setOpBlockId(op, targetBlockId);
+    }
+  } else {
+    for (auto *op : allOps) {
+      setOpBlockId(op, targetBlockId);
+    }
+  }
+  return success();
 }
 
 } // anonymous namespace
@@ -495,33 +568,12 @@ public:
     auto &aa = getAnalysis<AliasAnalysis>();
     CVPipeline::MemoryDependenceGraph memGraph(module, aa);
 
-    module.walk([&](memref::CopyOp copyOp){forgeCopyOp(copyOp, memGraph);});
-
-    module.walk([&](linalg::FillOp fillOp) {
-        auto *parentOp = fillOp->getParentOp();
-        auto ifOp = llvm::dyn_cast_if_present<scf::IfOp>(parentOp);
-        if (!ifOp) {
-            return;
-        }
-        if (!ifOp->hasAttr("hivm.unlikely_condition")) {
-            LOG_DEBUG("Skipped: " << ifOp << "\n");
-            return;
-        }
-        LOG_DEBUG("Processing: " << ifOp << "\n");
-        forgeFilledAllocInIf(fillOp);
-    });
-
-    int processedCount = 0;
-    int successCount = 0;
-
     module.walk([&](memref::AllocOp allocOp) {
-      processedCount++;
-      if (tryUnifyForAlloc(allocOp, memGraph)) {
-        successCount++;
+      if (failed(tryUnifyForAlloc(allocOp, memGraph))) {
+        signalPassFailure();
       }
     });
 
-    LOG_DEBUG("[UnifyAllocBlockPass] Processed: " << processedCount << " allocs, unified: " << successCount);
     LOG_DEBUG("After: " << *module << "\n");
   }
 };
