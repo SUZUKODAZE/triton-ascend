@@ -23,6 +23,11 @@
 
 #include "ascend/include/DynamicCVPipeline/Passes.h"
 #include "ascend/include/DynamicCVPipeline/Common/BufferCountManager.h"
+#include "ascend/include/DynamicCVPipeline/AllocMultiCache.h"
+#include "ascend/include/DynamicCVPipeline/AddControlFlowCondition.h"
+#include "ascend/include/DynamicCVPipeline/RemoveAttributes.h"
+#include "ascend/include/DynamicCVPipeline/SplitDataflowPass.h"
+#include "ascend/include/DynamicCVPipeline/SeparateMemoryFromComputePass.h"
 // todo: this code will be removed in version 530.
 #include "ascend/include/TritonAffinityOpt/Passes.h"
 
@@ -370,9 +375,39 @@ void init_triton_ascend_passes_ttir(py::module &&m) {
   m.def("add_dag_ssbuffer", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::createDAGSSBufferPass());});
 
-  m.def("set_buffer_count", [](int type, int count) {
-    auto depType = static_cast<mlir::triton::BufferCountManager::DepType>(type);
-    mlir::triton::BufferCountManager::getInstance().setBufferCount(depType, count);
+  m.def("set_buffer_count", [](const std::string& type, int count) {
+    if (type == "INTRA") {
+      mlir::triton::BufferCountManager::getInstance().setBufferCount(
+          mlir::triton::BufferCountManager::DepType::IntraCore, count);
+    } else if (type == "INTER") {
+      mlir::triton::BufferCountManager::getInstance().setBufferCount(
+          mlir::triton::BufferCountManager::DepType::InterCore, count);
+    } else if (type == "LOAD") {
+      mlir::triton::BufferCountManager::getInstance().setBufferCount(
+          mlir::triton::BufferCountManager::DepType::LoadStore, count);
+    }
+  });
+
+  m.def("plan_compute_block", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::createPlanComputeBlockPass());});
+
+  m.def("split_dataflow", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::createSplitDataflowPass());});
+
+  m.def("separate_memory_from_compute", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::createSeparateMemoryFromComputePass());});
+
+  m.def("alloc_multi_cache", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::createAllocMultiCachePass());});
+
+  m.def("add_control_flow_condition", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::createAddControlFlowConditionPass());});
+
+  m.def("compute_block_opt", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::createComputeBlockOptPass());});
+
+  m.def("remove_ssbuf_attr", [](PassManager &pm) {
+    pm.addPass(createRemoveSsbufAttrPass());
   });
 }
 
