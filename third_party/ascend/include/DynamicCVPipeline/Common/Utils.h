@@ -36,6 +36,7 @@ inline constexpr llvm::StringLiteral kBlockId = "ssbuffer.block_id";
 inline constexpr llvm::StringLiteral kTransferId = "ssbuffer.transfer_id";
 inline constexpr llvm::StringLiteral kCubeFirst = "ssbuffer.cube_first";
 inline constexpr llvm::StringLiteral kVectorFirst = "ssbuffer.vector_first";
+inline constexpr llvm::StringLiteral kAddFromMatmul = "ssbuffer.add_from_matmul";
 inline constexpr const char *ERRCODE_ATTR = "triton_ascend.dynamic_cv_pipeline.rc";
 static constexpr const int ERRCODE_FAILED = 1;
 static constexpr const int ERRCODE_IGNORED = 2;
