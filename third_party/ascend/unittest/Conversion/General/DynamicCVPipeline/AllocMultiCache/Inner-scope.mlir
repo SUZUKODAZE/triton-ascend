@@ -205,7 +205,7 @@ module attributes {hacc.target = #hacc.target<"Ascend950PR_9579">} {
         } else {
           %r2 = arith.divsi %compute, %c1_i64 {ssbuffer.block_id = 9 : i32} : i64
           scf.yield %r2 : i64
-        }
+        }{ssbuffer.block_id = 12 : i32}
         memref.store %compute, %cast_alloc[%c0] {ssbuffer.block_id = 12 : i32} : memref<1xi64, strided<[1], offset: ?>>
       } {ssbuffer.block_id = 26 : i32, ssbuffer.main_loop = 1 : i64}
       scope.return
@@ -847,6 +847,357 @@ func.func @test_t23_scf_if_else_branch_yield() {
         // Final producer in block_id = 5
         %final = arith.addf %new_prod1, %new_prod2 {ssbuffer.block_id = 5 : i32} : tensor<128xf32>
         scf.yield %final : tensor<128xf32>
+      } {ssbuffer.main_loop = 1 : i64}
+      scope.return
+    } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
+    return
+  }
+
+//===--------------------------------------------------------------------===//
+// T26: ifOp inner ops - dep_mark applied with cross-block producer (baseline)
+// Test: An ifOp at block 12 with inner ops at blocks 8 and 9 uses a scalar
+//       producer at block 11. This is a baseline test that verifies dep_mark
+//       is added when producer and ifOp are in different blocks.
+// NOTE: This test passes with BOTH getSsbufferId AND getOutermostSsbufferId
+//       because all blocks (8, 9, 12) are cross-block from producer (11).
+//       See T27 for the test that ACTUALLY distinguishes the fix.
+// Key Check: dep_mark is added to producer and inner ops
+//===--------------------------------------------------------------------===//
+// CHECK-LABEL: func.func @test_t26_ifop_inner_dep_mark
+// CHECK: arith.addi {{.*}} {ssbuffer.block_id = 11 : i32, ssbuffer.dep_mark
+// CHECK: scf.if
+// CHECK: arith.muli {{.*}} {ssbuffer.block_id = 8 : i32, ssbuffer.dep_mark
+// CHECK: arith.divsi {{.*}} {ssbuffer.block_id = 9 : i32, ssbuffer.dep_mark
+  func.func @test_t26_ifop_inner_dep_mark() {
+    %true = arith.constant true
+    %c0_i64 = arith.constant 0 : i64
+    %c100_i64 = arith.constant 100 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c0 = arith.constant 0 : index
+    scope.scope : () -> () {
+      %alloc = memref.alloc() : memref<1xi64>
+      %cast_alloc = memref.cast %alloc : memref<1xi64> to memref<1xi64, strided<[1], offset: ?>>
+      scf.for %i = %c0_i64 to %c100_i64 step %c1_i64 : i64 {
+        %load = memref.load %cast_alloc[%c0] {ssbuffer.block_id = 11 : i32} : memref<1xi64, strided<[1], offset: ?>>
+        %compute = arith.addi %load, %c1_i64 {ssbuffer.block_id = 11 : i32} : i64
+        %result = scf.if %true -> (i64) {
+          %r1 = arith.muli %compute, %c1_i64 {ssbuffer.block_id = 8 : i32} : i64
+          scf.yield %r1 : i64
+        } else {
+          %r2 = arith.divsi %compute, %c1_i64 {ssbuffer.block_id = 9 : i32} : i64
+          scf.yield %r2 : i64
+        } {ssbuffer.block_id = 12 : i32}
+        memref.store %compute, %cast_alloc[%c0] {ssbuffer.block_id = 12 : i32} : memref<1xi64, strided<[1], offset: ?>>
+      } {ssbuffer.block_id = 26 : i32, ssbuffer.main_loop = 1 : i64}
+      scope.return
+    } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
+    return
+  }
+
+//===--------------------------------------------------------------------===//
+// T27: ifOp inner ops - same-block producer, no dep_mark
+// Test: When the ifOp is at the SAME block as the producer (both block 11),
+//       the cross-block dep judgment should treat them as same-block
+//       (11 vs 11), so NO dep_mark should be added.
+//       This is the inverse case of T26.
+// Key Check: NO dep_mark on producer or inner ops
+//===--------------------------------------------------------------------===//
+// CHECK-LABEL: func.func @test_t27_ifop_same_block_no_dep_mark
+// CHECK-NOT: arith.addi {{.*}} ssbuffer.dep_mark
+// CHECK-NOT: arith.muli {{.*}} ssbuffer.dep_mark
+// CHECK-NOT: arith.divsi {{.*}} ssbuffer.dep_mark
+  func.func @test_t27_ifop_same_block_no_dep_mark() {
+    %true = arith.constant true
+    %c0_i64 = arith.constant 0 : i64
+    %c100_i64 = arith.constant 100 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c0 = arith.constant 0 : index
+    scope.scope : () -> () {
+      %alloc = memref.alloc() : memref<1xi64>
+      %cast_alloc = memref.cast %alloc : memref<1xi64> to memref<1xi64, strided<[1], offset: ?>>
+      scf.for %i = %c0_i64 to %c100_i64 step %c1_i64 : i64 {
+        %load = memref.load %cast_alloc[%c0] {ssbuffer.block_id = 11 : i32} : memref<1xi64, strided<[1], offset: ?>>
+        %compute = arith.addi %load, %c1_i64 {ssbuffer.block_id = 11 : i32} : i64
+        // ifOp at block 11 - SAME block as producer
+        %result = scf.if %true -> (i64) {
+          %r1 = arith.muli %compute, %c1_i64 {ssbuffer.block_id = 8 : i32} : i64
+          scf.yield %r1 : i64
+        } else {
+          %r2 = arith.divsi %compute, %c1_i64 {ssbuffer.block_id = 9 : i32} : i64
+          scf.yield %r2 : i64
+        } {ssbuffer.block_id = 11 : i32}
+        memref.store %compute, %cast_alloc[%c0] {ssbuffer.block_id = 12 : i32} : memref<1xi64, strided<[1], offset: ?>>
+      } {ssbuffer.block_id = 26 : i32, ssbuffer.main_loop = 1 : i64}
+      scope.return
+    } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
+    return
+  }
+
+//===--------------------------------------------------------------------===//
+// T28: ifOp with 2 results - producer-side buffer selection not duplicated
+// Test: An ifOp with 2 results (multi-result). The dedup fix in
+//       groupOpsBySsbufferId ensures the ifOp is added to opsById[18] only
+//       ONCE (not twice, once per result). Without the fix, processDepVal
+//       would iterate the ifOp twice and generate a duplicate producer-side
+//       scf.if buffer selection (with intra_buffer attribute).
+// Key Check: Only ONE scf.if with intra_buffer at block_id = 18
+//         : Pattern is checked structurally, not by specific intraDeps value
+//===--------------------------------------------------------------------===//
+// CHECK-LABEL: func.func @test_t28_multi_result_ifop_no_dup_intraDeps
+// The ifOp's producer-side buffer selection scf.if (with intra_buffer at block 18)
+// should appear exactly once. It contains hivm.hir.copy for the ifOp's result.
+// CHECK: scf.if
+// CHECK: hivm.hir.copy {{.*}} outs({{.*}}) {ssbuffer.block_id = 18 : i32}
+// CHECK: } {ssbuffer.block_id = 18 : i32, ssbuffer.intra_buffer}
+// No duplicate producer-side scf.if would produce another intra_buffer at block 18
+// CHECK-NOT: } {ssbuffer.block_id = 18 : i32, ssbuffer.intra_buffer}
+  func.func @test_t28_multi_result_ifop_no_dup_intraDeps() {
+    %c0_i32 = arith.constant 0 : i32
+    %c100_i32 = arith.constant 100 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %cst = arith.constant 1.0 : f32
+    %empty = tensor.empty() : tensor<128xf32>
+    %alloc = memref.alloc() : memref<128xf32, #hivm.address_space<ub>>
+    scope.scope : () -> () {
+      // Transfer producer at block 11
+      %memspacecast = memref.memory_space_cast %alloc {ssbuffer.block_id = 11 : i32, ssbuffer.transfer_id = 1 : i32} : memref<128xf32, #hivm.address_space<ub>> to memref<128xf32>
+      %depval = bufferization.to_tensor %memspacecast restrict writable {ssbuffer.block_id = 11 : i32, ssbuffer.transfer_id = 1 : i32} : memref<128xf32>
+      %loop_result = scf.for %i = %c0_i32 to %c100_i32 step %c1_i32 iter_args(%arg = %depval) -> (tensor<128xf32>) : i32 {
+        %cond = arith.cmpi eq, %i, %c0_i32 : i32
+        // ifOp with 2 results - the duplication bug would manifest here
+        %if_result:2 = scf.if %cond -> (tensor<128xf32>, tensor<128xf32>) {
+          %consumed = arith.addf %arg, %arg {ssbuffer.block_id = 11 : i32} : tensor<128xf32>
+          scf.yield %consumed, %consumed : tensor<128xf32>, tensor<128xf32>
+        } else {
+          %other = arith.mulf %arg, %arg {ssbuffer.block_id = 11 : i32} : tensor<128xf32>
+          scf.yield %other, %other : tensor<128xf32>, tensor<128xf32>
+        } {ssbuffer.block_id = 18 : i32}
+        %next = arith.addf %if_result#0, %if_result#0 {ssbuffer.block_id = 11 : i32} : tensor<128xf32>
+        scf.yield %next : tensor<128xf32>
+      } {ssbuffer.main_loop = 1 : i64}
+      scope.return
+    } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
+    return
+  }
+
+//===--------------------------------------------------------------------===//
+// T29: ifOp inner ops - producer-side buffer uses ifOp's block_id (baseline)
+// Test: An ifOp at block 18 yields a result that is used outside (block 11).
+//       The producer-side hivm.hir.copy for the ifOp's result must use the
+//       ifOp's block_id (18).
+// NOTE: This test passes with BOTH getSsbufferId AND getOutermostSsbufferId
+//       because for the ifOp itself, both return 18 (ifOp's own block_id).
+//       The fix only changes behavior for INNER ops of the ifOp (see T27).
+// Key Check: hivm.hir.copy (producer side) is at block_id = 18 (ifOp's)
+//===--------------------------------------------------------------------===//
+// CHECK-LABEL: func.func @test_t29_ifop_buffer_uses_ifop_block_id
+// CHECK: scf.if
+// CHECK: hivm.hir.copy {{.*}} outs({{.*}}) {ssbuffer.block_id = 18 : i32}
+// CHECK: } {ssbuffer.block_id = 18 : i32, ssbuffer.intra_buffer}
+  func.func @test_t29_ifop_buffer_uses_ifop_block_id() {
+    %c0_i32 = arith.constant 0 : i32
+    %c100_i32 = arith.constant 100 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %cst = arith.constant 1.0 : f32
+    %empty = tensor.empty() : tensor<128xf32>
+    %alloc = memref.alloc() : memref<128xf32, #hivm.address_space<ub>>
+    scope.scope : () -> () {
+      // Transfer producer at block 11
+      %memspacecast = memref.memory_space_cast %alloc {ssbuffer.block_id = 11 : i32, ssbuffer.transfer_id = 1 : i32} : memref<128xf32, #hivm.address_space<ub>> to memref<128xf32>
+      %depval = bufferization.to_tensor %memspacecast restrict writable {ssbuffer.block_id = 11 : i32, ssbuffer.transfer_id = 1 : i32} : memref<128xf32>
+      %loop_result = scf.for %i = %c0_i32 to %c100_i32 step %c1_i32 iter_args(%arg = %depval) -> (tensor<128xf32>) : i32 {
+        %cond = arith.cmpi eq, %i, %c0_i32 : i32
+        // ifOp at block 18 with 2 results, inner ops at block 11
+        %if_result:2 = scf.if %cond -> (tensor<128xf32>, tensor<128xf32>) {
+          %consumed = arith.addf %arg, %arg {ssbuffer.block_id = 11 : i32} : tensor<128xf32>
+          scf.yield %consumed, %consumed : tensor<128xf32>, tensor<128xf32>
+        } else {
+          %other = arith.mulf %arg, %arg {ssbuffer.block_id = 11 : i32} : tensor<128xf32>
+          scf.yield %other, %other : tensor<128xf32>, tensor<128xf32>
+        } {ssbuffer.block_id = 18 : i32}
+        %next = arith.addf %if_result#0, %if_result#0 {ssbuffer.block_id = 11 : i32} : tensor<128xf32>
+        scf.yield %next : tensor<128xf32>
+      } {ssbuffer.main_loop = 1 : i64}
+      scope.return
+    } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
+    return
+  }
+
+//===--------------------------------------------------------------------===//
+// T30: memref.alloc in outer forOp, subview in nested forOp
+// Mirrors the wy_input.mlir structure:
+//   - outer forOp (block 8, main_loop = 0): wraps everything
+//   - inside: %alloc_8 at block 4, then inner forOp at block 4
+//   - inside inner forOp: %subview_17 at block 3 uses %alloc_8
+// getOutermostSsbufferId should treat subview_17's logical block as 4
+// (the inner forOp's block), so alloc_8 (block 4) -> subview_17 is same-block
+// and no dep_mark / no ssbuffer.skip should be emitted.
+//===--------------------------------------------------------------------===//
+// CHECK-LABEL: func.func @test_t30_forop_memref_alloc_nested
+// CHECK-NOT: ssbuffer.skip
+// CHECK-NOT: memref.alloc.*ssbuffer\.dep_mark
+// CHECK-NOT: memref.subview.*ssbuffer\.dep_mark
+  func.func @test_t30_forop_memref_alloc_nested() {
+    %c0_i32 = arith.constant 0 : i32
+    %c100_i32 = arith.constant 100 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c128 = arith.constant 128 : index
+    %c64 = arith.constant 64 : index
+    %c64_i32 = arith.constant 64 : i32
+    scope.scope : () -> () {
+      %36:3 = scf.for %arg19 = %c0_i32 to %c100_i32 step %c1_i32 iter_args(%arg20 = %c0_i32, %arg21 = %c0_i32, %arg22 = %c0_i32) -> (i32, i32, i32) : i32 {
+        // %alloc_8 at block 4 — outside inner forOp
+        %alloc_8 = memref.alloc() {ssbuffer.block_id = 4 : i32} : memref<128x64xf16>
+        // Inner forOp at block 4, no main_loop attribute
+        scf.for %arg23 = %c0 to %c128 step %c1 {
+          // %subview_17 at block 3 — uses %alloc_8
+          %subview_17 = memref.subview %alloc_8[%arg23, 0] [1, 64] [1, 1] {ssbuffer.block_id = 3 : i32} : memref<128x64xf16> to memref<1x64xf16, strided<[64, 1], offset: ?>>
+        } {ssbuffer.block_id = 4 : i32}
+        // %to_tensor at block 4 — also uses %alloc_8, same-block
+        %to_tensor = bufferization.to_tensor %alloc_8 restrict writable {ssbuffer.block_id = 4 : i32} : memref<128x64xf16>
+        scf.yield %arg20, %arg21, %arg22 : i32, i32, i32
+      } {ssbuffer.block_id = 8 : i32, ssbuffer.main_loop = 0 : i32}
+      scope.return
+    } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
+    return
+  }
+
+//===--------------------------------------------------------------------===//
+// T31: memref.alloc outside ifOp, subview inside ifOp
+// Same logical structure as T30 but with an ifOp in place of the inner forOp:
+//   - outer forOp (block 8, main_loop = 0): wraps everything
+//   - inside: %alloc_8 at block 4, then ifOp at block 4
+//   - inside ifOp: %subview_17 at block 3 uses %alloc_8
+// getOutermostSsbufferId should treat subview_17's logical block as 4
+// (the ifOp's block), so alloc_8 (block 4) -> subview_17 is same-block
+// and no dep_mark / no ssbuffer.skip should be emitted.
+//===--------------------------------------------------------------------===//
+// CHECK-LABEL: func.func @test_t31_ifop_memref_alloc_nested
+// CHECK-NOT: ssbuffer.skip
+// CHECK-NOT: memref.alloc.*ssbuffer\.dep_mark
+// CHECK-NOT: memref.subview.*ssbuffer\.dep_mark
+  func.func @test_t31_ifop_memref_alloc_nested() {
+    %true = arith.constant true
+    %c0_i32 = arith.constant 0 : i32
+    %c100_i32 = arith.constant 100 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c128 = arith.constant 128 : index
+    scope.scope : () -> () {
+      %36:3 = scf.for %arg19 = %c0_i32 to %c100_i32 step %c1_i32 iter_args(%arg20 = %c0_i32, %arg21 = %c0_i32, %arg22 = %c0_i32) -> (i32, i32, i32) : i32 {
+        // %alloc_8 at block 4 — outside the ifOp
+        %alloc_8 = memref.alloc() {ssbuffer.block_id = 4 : i32} : memref<128x64xf16>
+        // ifOp at block 4, condition is %true (always taken)
+        %if_result:2 = scf.if %true -> (memref<128x64xf16>, i32) {
+          // %subview_17 at block 3 — uses %alloc_8, inside ifOp
+          %subview_17 = memref.subview %alloc_8[%c0, 0] [1, 64] [1, 1] {ssbuffer.block_id = 3 : i32} : memref<128x64xf16> to memref<1x64xf16, strided<[64, 1], offset: ?>>
+          scf.yield %alloc_8, %arg22 : memref<128x64xf16>, i32
+        } else {
+          scf.yield %alloc_8, %arg22 : memref<128x64xf16>, i32
+        } {ssbuffer.block_id = 4 : i32}
+        // %to_tensor at block 4 — uses %alloc_8, same-block
+        %to_tensor = bufferization.to_tensor %alloc_8 restrict writable {ssbuffer.block_id = 4 : i32} : memref<128x64xf16>
+        scf.yield %arg20, %arg21, %arg22 : i32, i32, i32
+      } {ssbuffer.block_id = 8 : i32, ssbuffer.main_loop = 0 : i32}
+      scope.return
+    } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
+    return
+  }
+
+//===--------------------------------------------------------------------===//
+// T32: forOp with same block as producer - NO dep_mark
+// Same scenario as T27 but uses scf.for instead of scf.if.
+//   - producer addi at block 11, produces %compute
+//   - forOp at block 11 (SAME block as producer), inner muli at block 8
+//   - inner muli uses %compute
+// getOutermostSsbufferId walks up the parent chain and records each
+// non-main_loop forOp's block_id, so the inner muli's outermost id is
+// the enclosing forOp's block_id (11), matching the producer (11).
+// The cross-block dep judgment should treat them as same-block (11 vs 11),
+// so NO dep_mark should be added.
+// Key Check: NO dep_mark on producer or inner ops
+//===--------------------------------------------------------------------===//
+// CHECK-LABEL: func.func @test_t32_forop_same_block_no_dep_mark
+// CHECK-NOT: arith.addi {{.*}} ssbuffer.dep_mark
+// CHECK-NOT: arith.muli {{.*}} ssbuffer.dep_mark
+  func.func @test_t32_forop_same_block_no_dep_mark() {
+    %c0_i64 = arith.constant 0 : i64
+    %c100_i64 = arith.constant 100 : i64
+    %c10_i64 = arith.constant 10 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c0 = arith.constant 0 : index
+    scope.scope : () -> () {
+      %alloc = memref.alloc() : memref<1xi64>
+      %cast_alloc = memref.cast %alloc : memref<1xi64> to memref<1xi64, strided<[1], offset: ?>>
+      scf.for %i = %c0_i64 to %c100_i64 step %c1_i64 : i64 {
+        %load = memref.load %cast_alloc[%c0] {ssbuffer.block_id = 11 : i32} : memref<1xi64, strided<[1], offset: ?>>
+        %compute = arith.addi %load, %c1_i64 {ssbuffer.block_id = 11 : i32} : i64
+        // forOp at block 11 - SAME block as producer
+        %result = scf.for %j = %c0_i64 to %c10_i64 step %c1_i64 iter_args(%a = %c0_i64) -> (i64) : i64 {
+          %r1 = arith.muli %compute, %c1_i64 {ssbuffer.block_id = 8 : i32} : i64
+          scf.yield %r1 : i64
+        } {ssbuffer.block_id = 11 : i32}
+        memref.store %compute, %cast_alloc[%c0] {ssbuffer.block_id = 12 : i32} : memref<1xi64, strided<[1], offset: ?>>
+      } {ssbuffer.block_id = 26 : i32, ssbuffer.main_loop = 1 : i64}
+      scope.return
+    } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
+    return
+  }
+
+//===--------------------------------------------------------------------===//
+// T33: depVal used in BOTH then/else branches of scf.if - dominance fix
+// Test: A cross-block depVal inside the main_loop forOp (linalg.fill result,
+//       block 13) is consumed in BOTH the then and else branches of an
+//       scf.if (block 21). Both branches have ops with block_id 11 (then)
+//       and block_id 12 (else). getOutermostSsbufferId maps both to
+//       userBlockId=21 (the scf.if's own block_id).
+//       Without the per-region grouping fix, the pass inserts ONE buffer
+//       selection scf.if at the first op's position (e.g. then branch) and
+//       uses its result in BOTH branches, which breaks SSA dominance
+//       (else branch references a value defined in then branch).
+//       Fix: group opsInBlock by their containing Block; insert a separate
+//       buffer selection per region.
+// Key Check: TWO scf.if with intra_buffer (one in then, one in else)
+//         : each branch's use of the depVal is replaced with its own result
+//         : NO dominance verification error
+//===--------------------------------------------------------------------===//
+  // CHECK-LABEL: func.func @test_t33_ifop_both_branches_depval
+  // linalg.fill (depVal) at block 13 inside main_loop forOp
+  // CHECK: linalg.fill {ssbuffer.block_id = 13 : i32}
+  // The scf.if at block 21 (the user of the depVal)
+  // CHECK: scf.if
+  // BOTH branches must have a buffer selection scf.if (intra_buffer at block 21)
+  // CHECK-DAG: } {ssbuffer.block_id = 21 : i32, ssbuffer.intraDeps = [0 : i32, 0 : i32], ssbuffer.intra_buffer}
+  // CHECK-DAG: } {ssbuffer.block_id = 21 : i32, ssbuffer.intraDeps = [0 : i32, 0 : i32], ssbuffer.intra_buffer}
+  // CHECK-DAG: bufferization.to_tensor
+  // CHECK-DAG: bufferization.to_tensor
+  // Both consumer ops still present
+  // CHECK-DAG: arith.addf {{.*}} {ssbuffer.block_id = 11 : i32}
+  // CHECK-DAG: arith.addf {{.*}} {ssbuffer.block_id = 12 : i32}
+  func.func @test_t33_ifop_both_branches_depval() {
+    %c0_i32 = arith.constant 0 : i32
+    %c100_i32 = arith.constant 100 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %cst = arith.constant 1.0 : f32
+    %true = arith.constant true
+    %empty = tensor.empty() : tensor<32xf32>
+    scope.scope : () -> () {
+      scf.for %i = %c0_i32 to %c100_i32 step %c1_i32 : i32 {
+        // depVal: linalg.fill at block 13 - direct child of main_loop forOp
+        %filled = linalg.fill {ssbuffer.block_id = 13 : i32} ins(%cst : f32) outs(%empty : tensor<32xf32>) -> tensor<32xf32>
+        // scf.if at block 21 - uses %filled in BOTH then and else branches
+        %result = scf.if %true -> (tensor<32xf32>) {
+          // then branch - block 11
+          %r1 = arith.addf %filled, %filled {ssbuffer.block_id = 11 : i32} : tensor<32xf32>
+          scf.yield %r1 : tensor<32xf32>
+        } else {
+          // else branch - block 12
+          %r2 = arith.addf %filled, %filled {ssbuffer.block_id = 12 : i32} : tensor<32xf32>
+          scf.yield %r2 : tensor<32xf32>
+        } {ssbuffer.block_id = 21 : i32}
       } {ssbuffer.main_loop = 1 : i64}
       scope.return
     } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
