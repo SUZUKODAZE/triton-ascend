@@ -44,6 +44,7 @@
 #include "mlir/IR/Region.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
@@ -289,6 +290,11 @@ SmallVector<MemoryEffects::EffectInstance> MemoryDependenceGraph::collectOuterEf
     if (auto markOp = dyn_cast<annotation::MarkOp>(op)) {
         MemoryEffects::EffectInstance scopedWrite(MemoryEffects::Write::get());
         return {remapEffectValue(scopedWrite, markOp.getSrc())};
+    }
+
+    if (auto allocTensorOp = dyn_cast<bufferization::AllocTensorOp>(op)) {
+        MemoryEffects::EffectInstance scopedAlloc(MemoryEffects::Allocate::get());
+        return {remapEffectValue(scopedAlloc, allocTensorOp.getResult())};
     }
 
     std::optional<SmallVector<MemoryEffects::EffectInstance>> raw;
