@@ -1267,6 +1267,54 @@ void InterCoreTransferAndSyncPass::remapInterCoreTransferFlagIds(
     });
 }
 
+void InterCoreTransferAndSyncPass::sortDependencies(llvm::SmallVector<DependencyInfo> &dependencies, mlir::ModuleOp module)
+{
+    if (dependencies.size() <= 1) {
+        return;
+    }
+
+    // Step 1: Walk the entire module and assign a monotonically increasing order
+    //         to each operation, representing its position in the IR.
+    llvm::DenseMap<mlir::Operation *, unsigned> opOrder;
+    unsigned order = 0;
+    module.walk([&](mlir::Operation *op) {
+        opOrder[op] = order++;
+    });
+
+    // Step 2: Helper lambda — get the earliest user op of dep.value within the
+    //         consumer compute block.
+    auto getFirstConsumerOp = [&](const DependencyInfo &dep) -> mlir::Operation * {
+        mlir::Operation *firstConsumer = nullptr;
+        unsigned firstOrder = std::numeric_limits<unsigned>::max();
+        for (auto *user : dep.value.getUsers()) {
+            auto userBlockIdOpt = CVPipeline::getOpBlockId(user);
+            if (userBlockIdOpt && static_cast<int>(*userBlockIdOpt) == dep.consumerBlockId) {
+                auto it = opOrder.find(user);
+                if (it != opOrder.end() && it->second < firstOrder) {
+                    firstOrder = it->second;
+                    firstConsumer = user;
+                }
+            }
+        }
+        return firstConsumer;
+    };
+
+    // Step 3: Sort
+    std::sort(dependencies.begin(), dependencies.end(), [&](const DependencyInfo &a, const DependencyInfo &b) {
+        // the dependency whose consumer op appears earlier comes first.
+        auto *aConsOp = getFirstConsumerOp(a);
+        auto *bConsOp = getFirstConsumerOp(b);
+        if (aConsOp && bConsOp) {
+            unsigned aConsOpOrder = opOrder.lookup(aConsOp);
+            unsigned bConsOpOrder = opOrder.lookup(bConsOp);
+            if (aConsOpOrder != bConsOpOrder) {
+                return aConsOpOrder < bConsOpOrder;
+            }
+        }
+        return false;
+    });
+}
+
 // Main Processing
 LogicalResult InterCoreTransferAndSyncPass::processDependencies(
     FlagIdManager &flagManager, FlagIdReuseManager &flagIdReuseManager)
@@ -1281,6 +1329,7 @@ LogicalResult InterCoreTransferAndSyncPass::processDependencies(
     }
 
     llvm::SmallVector<DependencyInfo> &V2CDependencies = info.getV2CDependencies();
+    sortDependencies(V2CDependencies, module);
     LOG_DEBUG("[DEBUG] V2CDependencies size: " << V2CDependencies.size() << "\n");
     for (size_t i = 0; i < V2CDependencies.size(); ++i) {
         auto &dep = V2CDependencies[i];
@@ -1308,6 +1357,7 @@ LogicalResult InterCoreTransferAndSyncPass::processDependencies(
     LOG_DEBUG("Completed V->C transfers and syncs.\n");
 
     llvm::SmallVector<DependencyInfo> &C2VDependencies = info.getC2VDependencies();
+    sortDependencies(C2VDependencies, module);
     LOG_DEBUG("[DEBUG] C2VDependencies size: " << C2VDependencies.size() << "\n");
     // Step 2: Handle C->V dependencies
     for (auto &dep : C2VDependencies) {

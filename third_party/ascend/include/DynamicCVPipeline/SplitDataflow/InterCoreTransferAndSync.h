@@ -148,6 +148,7 @@ private:
     mlir::Operation *consumedDataOp = nullptr);
   void insertMemDepSync(mlir::OpBuilder &builder, mlir::Operation *producerOp, mlir::Operation *consumerOp, int flag,
     mlir::Location loc, bool isCubeToVector);
+  void sortDependencies(llvm::SmallVector<DependencyInfo> &dependencies, mlir::ModuleOp module);
   llvm::SmallVector<mlir::Operation *> insertAnalyzeFlagRelations(mlir::ModuleOp module, FlagIdReuseManager &flagIdReuseManager);
   void remapInterCoreTransferFlagIds(llvm::DenseMap<int, int> &remapResult);
 };
