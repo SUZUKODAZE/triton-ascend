@@ -29,6 +29,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
 
 static constexpr const char *DEBUG_TYPE = "CloneOps";
@@ -132,9 +133,9 @@ static LogicalResult cloneOpsForBlock(int curId, SmallVector<Operation *> &curOp
 
   for (Operation *op : toClone) {
     Operation *cloned = cloneOpWithMapping(op, builder, valueMap);
-    cloned->setAttr("ssbuffer.block_id", builder.getI32IntegerAttr(curId));
-    if (auto origBlockIdAttr = op->getAttrOfType<IntegerAttr>("ssbuffer.block_id")) {
-      cloned->setAttr("ssbuffer.clone", origBlockIdAttr);
+    cloned->setAttr(CVPipeline::kBlockId, builder.getI32IntegerAttr(curId));
+    if (auto origBlockIdOpt = CVPipeline::getOpBlockId(op)) {
+      cloned->setAttr(CVPipeline::kClone, builder.getI32IntegerAttr(static_cast<int32_t>(*origBlockIdOpt)));
     }
     clonedOps.push_back(cloned);
   }
@@ -266,7 +267,7 @@ static LogicalResult cleanupClonedOps(scf::ForOp forOp,
     // Find last index of cloned ops
     int startIdx = -1;
     for (int j = curOps.size() - 1; j >= 0; --j) {
-      if (curOps[j]->hasAttr("ssbuffer.clone")) {
+      if (curOps[j]->hasAttr(CVPipeline::kClone)) {
         startIdx = j;
         break;
       }
@@ -280,7 +281,7 @@ static LogicalResult cleanupClonedOps(scf::ForOp forOp,
     // have already been processed (and erased if applicable)
     for (int j = startIdx; j >= 0; --j) {
       Operation *op = curOps[j];
-      if (!op->hasAttr("ssbuffer.clone")) {
+      if (!op->hasAttr(CVPipeline::kClone)) {
         break;
       }
       // Rebuild memGraph after each erasure to reflect current IR state
@@ -294,7 +295,7 @@ static LogicalResult cleanupClonedOps(scf::ForOp forOp,
 
   // Check whether new forOp is valid after cleanup
   for (Operation &op : forOp.getBody()->without_terminator()) {
-    if (op.hasAttr("ssbuffer.clone")) {
+    if (op.hasAttr(CVPipeline::kClone)) {
       if (isa<SyncBlockWaitOp>(op) || isa<SyncBlockSetOp>(op) ||
           isa<hivm::FixpipeOp>(op)) {
         LDBG("[ERROR]: Cloned sync/fixpipe op should have been erased: " << op.getName() << "\n");
@@ -315,7 +316,7 @@ LogicalResult CloneOpsPass::cleanupClonedOpsInMainLoop(scf::ForOp forOp)
     return success();
   }
 
-  auto attr = scopeOp->getAttrOfType<hivm::TCoreTypeAttr>("hivm.tcore_type");
+  auto attr = scopeOp->getAttrOfType<hivm::TCoreTypeAttr>(CVPipeline::kTcoreType);
   if (!attr) {
     return success();
   }
@@ -347,13 +348,13 @@ static bool areBlockIdsConsecutive(scf::ForOp forOp)
 {
   SmallVector<int> idsInOrder;
   for (Operation &op : forOp.getBody()->without_terminator()) {
-    auto blockIdAttr = op.getAttrOfType<IntegerAttr>("ssbuffer.block_id");
-    if (!blockIdAttr) {
+    auto blockIdOpt = CVPipeline::getOpBlockId(&op);
+    if (!blockIdOpt) {
       LDBG("[ERROR]: Op missing ssbuffer.block_id: " << op.getName() << "\n");
       return false;
     }
 
-    idsInOrder.push_back(blockIdAttr.getInt());
+    idsInOrder.push_back(static_cast<int>(*blockIdOpt));
   }
 
   // Check that each block_id forms a contiguous range
@@ -381,7 +382,7 @@ static bool areBlockIdsConsecutive(scf::ForOp forOp)
 LogicalResult CloneOpsPass::validateBlockIdsConsecutive(ModuleOp module)
 {
   WalkResult result = module.walk([&](Operation *op) -> WalkResult {
-    if (!op->hasAttr("ssbuffer.main_loop")) {
+    if (!op->hasAttr(CVPipeline::kMainLoop)) {
       return WalkResult::advance();
     }
     auto forOp = dyn_cast<scf::ForOp>(op);
@@ -394,6 +395,57 @@ LogicalResult CloneOpsPass::validateBlockIdsConsecutive(ModuleOp module)
     }
     return WalkResult::advance();
   });
+  if (result.wasInterrupted())
+    return failure();
+
+  return success();
+}
+
+// Check that no op in a VECTOR scope's main_loop forOp has a tensor or
+// memref result carrying the ssbuffer.clone attribute.
+LogicalResult CloneOpsPass::validateClonedOpsInVector(ModuleOp module)
+{
+  WalkResult result = module.walk([&](Operation *op) -> WalkResult {
+    if (!op->hasAttr(CVPipeline::kMainLoop)) {
+      return WalkResult::advance();
+    }
+    auto forOp = dyn_cast<scf::ForOp>(op);
+    if (!forOp) {
+      LDBG("[Error]: op with ssbuffer.main_loop is not a scf::ForOp\n");
+      return WalkResult::interrupt();
+    }
+
+    scope::ScopeOp scopeOp = forOp->getParentOfType<scope::ScopeOp>();
+    if (!scopeOp) {
+      return WalkResult::advance();
+    }
+
+    auto attr = scopeOp->getAttrOfType<hivm::TCoreTypeAttr>(CVPipeline::kTcoreType);
+    if (!attr) {
+      return WalkResult::advance();
+    }
+
+    if (attr != hivm::TCoreTypeAttr::get(module.getContext(), hivm::TCoreType::VECTOR)) {
+      return WalkResult::advance();
+    }
+
+    for (Operation &bodyOp : forOp.getBody()->without_terminator()) {
+      if (!bodyOp.hasAttr(CVPipeline::kClone)) {
+        continue;
+      }
+      bool hasTensorOrMemref = llvm::any_of(bodyOp.getResults(), [](Value result) {
+        return isa<RankedTensorType, MemRefType>(result.getType());
+      });
+      if (hasTensorOrMemref) {
+        LDBG("[Error]: VECTOR main_loop contains cloned op with tensor/memref type: "
+             << bodyOp.getName() << "\n");
+        return WalkResult::interrupt();
+      }
+    }
+
+    return WalkResult::advance();
+  });
+
   if (result.wasInterrupted())
     return failure();
 
@@ -415,7 +467,7 @@ void CloneOpsPass::runOnOperation()
   // Clone ops in vector/cube to ensure that each block_id has its own
   // ops without sharing
   module.walk([&](Operation *op) -> WalkResult {
-    if (!op->hasAttr("ssbuffer.main_loop")) {
+    if (!op->hasAttr(CVPipeline::kMainLoop)) {
       return WalkResult::advance();
     }
     auto forOp = dyn_cast<scf::ForOp>(op);
@@ -436,8 +488,15 @@ void CloneOpsPass::runOnOperation()
     }
     return WalkResult::advance();
   });
-
+  
   LDBG("after cloneOps:\n" << module << "\n");
+
+  // Validate no cloned tensor/memref ops remaining in VECTOR main_loop forOp
+  if (failed(validateClonedOpsInVector(module))) {
+    signalPassFailure();
+    return;
+  }
+
 }
 
 namespace mlir {
