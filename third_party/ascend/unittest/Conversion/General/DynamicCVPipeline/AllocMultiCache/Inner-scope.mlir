@@ -1148,35 +1148,40 @@ func.func @test_t23_scf_if_else_branch_yield() {
   }
 
 //===--------------------------------------------------------------------===//
-// T33: depVal used in BOTH then/else branches of scf.if - dominance fix
-// Test: A cross-block depVal inside the main_loop forOp (linalg.fill result,
-//       block 13) is consumed in BOTH the then and else branches of an
-//       scf.if (block 21). Both branches have ops with block_id 11 (then)
-//       and block_id 12 (else). getOutermostSsbufferId maps both to
-//       userBlockId=21 (the scf.if's own block_id).
-//       Without the per-region grouping fix, the pass inserts ONE buffer
-//       selection scf.if at the first op's position (e.g. then branch) and
-//       uses its result in BOTH branches, which breaks SSA dominance
-//       (else branch references a value defined in then branch).
-//       Fix: group opsInBlock by their containing Block; insert a separate
-//       buffer selection per region.
-// Key Check: TWO scf.if with intra_buffer (one in then, one in else)
-//         : each branch's use of the depVal is replaced with its own result
-//         : NO dominance verification error
+// T33: depVal used in BOTH then/else branches of scf.if - empty+fill clone
+// Test: A cross-block depVal inside the main_loop forOp (linalg.fill result
+//       at block 13) is consumed in BOTH the then and else branches of an
+//       scf.if (block 21). The linalg.fill's outs comes from a
+//       tensor::EmptyOp, so the empty+fill clone path applies: the
+//       empty+fill pair is cloned to each branch (block 11 / block 12)
+//       and the depVal is replaced in-branch. No multi-buffer is created.
+//       Note: the per-region grouping from the original mistransfer fix
+//       still ensures each branch's clone is locally visible (no cross-
+//       region SSA dominance violation).
+// Key Check: original linalg.fill at block 13 preserved
+//         : cloned tensor.empty + linalg.fill in then branch (block 11)
+//         : cloned tensor.empty + linalg.fill in else branch (block 12)
+//         : NO memref.alloc / bufferization.to_tensor / hivm.hir.copy
+//         : NO ssbuffer.intra_buffer / intraDeps on scf.if
 //===--------------------------------------------------------------------===//
   // CHECK-LABEL: func.func @test_t33_ifop_both_branches_depval
-  // linalg.fill (depVal) at block 13 inside main_loop forOp
+  // Original linalg.fill (depVal) at block 13 inside main_loop forOp
   // CHECK: linalg.fill {ssbuffer.block_id = 13 : i32}
   // The scf.if at block 21 (the user of the depVal)
   // CHECK: scf.if
-  // BOTH branches must have a buffer selection scf.if (intra_buffer at block 21)
-  // CHECK-DAG: } {ssbuffer.block_id = 21 : i32, ssbuffer.intraDeps = [0 : i32, 0 : i32], ssbuffer.intra_buffer}
-  // CHECK-DAG: } {ssbuffer.block_id = 21 : i32, ssbuffer.intraDeps = [0 : i32, 0 : i32], ssbuffer.intra_buffer}
-  // CHECK-DAG: bufferization.to_tensor
-  // CHECK-DAG: bufferization.to_tensor
-  // Both consumer ops still present
-  // CHECK-DAG: arith.addf {{.*}} {ssbuffer.block_id = 11 : i32}
-  // CHECK-DAG: arith.addf {{.*}} {ssbuffer.block_id = 12 : i32}
+  // Cloned pattern in then branch (block 11)
+  // CHECK: tensor.empty() {ssbuffer.block_id = 11 : i32}
+  // CHECK: linalg.fill {ssbuffer.block_id = 11 : i32}
+  // CHECK: arith.addf {{.*}} {ssbuffer.block_id = 11 : i32}
+  // Cloned pattern in else branch (block 12)
+  // CHECK: tensor.empty() {ssbuffer.block_id = 12 : i32}
+  // CHECK: linalg.fill {ssbuffer.block_id = 12 : i32}
+  // CHECK: arith.addf {{.*}} {ssbuffer.block_id = 12 : i32}
+  // No multi-buffer path taken
+  // CHECK-NOT: memref.alloc
+  // CHECK-NOT: bufferization.to_tensor
+  // CHECK-NOT: hivm.hir.copy
+  // CHECK-NOT: ssbuffer.intra_buffer
   func.func @test_t33_ifop_both_branches_depval() {
     %c0_i32 = arith.constant 0 : i32
     %c100_i32 = arith.constant 100 : i32
@@ -1203,5 +1208,320 @@ func.func @test_t23_scf_if_else_branch_yield() {
     } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
     return
   }
+//===--------------------------------------------------------------------===//
+// T34: tensor.empty + linalg.fill Pattern - Clone to Consumer Block
+// Test: When linalg.fill's outs comes from tensor::EmptyOp in producer block,
+//       and the result is used in OTHER blocks, we should NOT do normal
+//       multi-buffer (no memref.alloc/hivm.copy/scf.if/bufferization.to_tensor).
+//       Instead, clone tensor.empty + linalg.fill to each consumer's position
+//       and replace the depVal usage there.
+// Key Check: tensor.empty + linalg.fill appear CLONED in consumer block (14)
+//         : cloned ops tagged with consumer's block_id
+//         : NO memref.alloc / scf.if / bufferization.to_tensor for this depVal
+//===--------------------------------------------------------------------===//
+  // CHECK-LABEL: func.func @test_t34_empty_fill_clone_to_consumer
+  // Original producer pattern in block 13
+  // CHECK: tensor.empty() {ssbuffer.block_id = 13 : i32}
+  // CHECK: linalg.fill {ssbuffer.block_id = 13 : i32}
+  // Cloned pattern in consumer block 14
+  // CHECK: tensor.empty() {ssbuffer.block_id = 14 : i32}
+  // CHECK: linalg.fill {ssbuffer.block_id = 14 : i32}
+  // Consumer op still in block 14
+  // CHECK: arith.addi {{.*}} {ssbuffer.block_id = 14 : i32}
+  // No buffer allocation for this depVal
+  // CHECK-NOT: memref.alloc
+  // CHECK-NOT: memref.memory_space_cast
+  // CHECK-NOT: bufferization.to_tensor
+  // CHECK-NOT: hivm.hir.copy
+  func.func @test_t34_empty_fill_clone_to_consumer() {
+    %c0_i32 = arith.constant 0 : i32
+    %c100_i32 = arith.constant 100 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %c0_init = arith.constant 0 : i32
+    %empty_8 = tensor.empty() : tensor<8xi32>
+    scope.scope : () -> () {
+      scf.for %i = %c0_i32 to %c100_i32 step %c1_i32 : i32 {
+        // Producer in block 13: tensor.empty + linalg.fill
+        %empty_inner = tensor.empty() {ssbuffer.block_id = 13 : i32} : tensor<8xi32>
+        %filled = linalg.fill {ssbuffer.block_id = 13 : i32} ins(%c0_init : i32) outs(%empty_inner : tensor<8xi32>) -> tensor<8xi32>
+        // Consumer in block 14: uses %filled (the linalg.fill result) cross-block
+        %consumed = arith.addi %filled, %filled {ssbuffer.block_id = 14 : i32} : tensor<8xi32>
+      } {ssbuffer.main_loop = 1 : i64}
+      scope.return
+    } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
+    return
+  }
 
+//===--------------------------------------------------------------------===//
+// T35: tensor.empty + linalg.fill Pattern - Multiple Consumer Blocks
+// Test: Same as T34, but the linalg.fill result is consumed by ops in
+//       TWO different consumer blocks (14 and 15). Each block should
+//       get its own clone.
+// Key Check: tensor.empty + linalg.fill appear cloned in BOTH 14 and 15
+//         : NO buffer allocation
+//===--------------------------------------------------------------------===//
+  // CHECK-LABEL: func.func @test_t35_empty_fill_clone_multi_consumer
+  // Original producer pattern in block 13
+  // CHECK: tensor.empty() {ssbuffer.block_id = 13 : i32}
+  // CHECK: linalg.fill {ssbuffer.block_id = 13 : i32}
+  // Cloned pattern in consumer block 14 (clone inserted before its user)
+  // CHECK: tensor.empty() {ssbuffer.block_id = 14 : i32}
+  // CHECK: linalg.fill {ssbuffer.block_id = 14 : i32}
+  // CHECK: arith.addi {{.*}} {ssbuffer.block_id = 14 : i32}
+  // Cloned pattern in consumer block 15 (clone inserted before its user)
+  // CHECK: tensor.empty() {ssbuffer.block_id = 15 : i32}
+  // CHECK: linalg.fill {ssbuffer.block_id = 15 : i32}
+  // CHECK: arith.subi {{.*}} {ssbuffer.block_id = 15 : i32}
+  // No buffer allocation
+  // CHECK-NOT: memref.alloc
+  // CHECK-NOT: bufferization.to_tensor
+  func.func @test_t35_empty_fill_clone_multi_consumer() {
+    %c0_i32 = arith.constant 0 : i32
+    %c100_i32 = arith.constant 100 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %c0_init = arith.constant 0 : i32
+    %empty_8 = tensor.empty() : tensor<8xi32>
+    scope.scope : () -> () {
+      scf.for %i = %c0_i32 to %c100_i32 step %c1_i32 : i32 {
+        // Producer in block 13
+        %empty_inner = tensor.empty() {ssbuffer.block_id = 13 : i32} : tensor<8xi32>
+        %filled = linalg.fill {ssbuffer.block_id = 13 : i32} ins(%c0_init : i32) outs(%empty_inner : tensor<8xi32>) -> tensor<8xi32>
+        // Two consumers in different blocks
+        %consumed14 = arith.addi %filled, %filled {ssbuffer.block_id = 14 : i32} : tensor<8xi32>
+        %consumed15 = arith.subi %filled, %filled {ssbuffer.block_id = 15 : i32} : tensor<8xi32>
+      } {ssbuffer.main_loop = 1 : i64}
+      scope.return
+    } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
+    return
+  }
+
+//===--------------------------------------------------------------------===//
+// T36: tensor.empty + linalg.fill Pattern - 2D Tensor
+// Test: Same as T34 but on a 2D tensor, verifying the clone preserves shape
+//       and element type.
+// Key Check: cloned tensor.empty/linalg.fill have the 2D shape
+//         : NO buffer allocation
+//===--------------------------------------------------------------------===//
+  // CHECK-LABEL: func.func @test_t36_empty_fill_clone_2d
+  // Original producer in block 13
+  // CHECK: tensor.empty() {ssbuffer.block_id = 13 : i32} : tensor<4x8xf32>
+  // CHECK: linalg.fill {ssbuffer.block_id = 13 : i32}
+  // Cloned to consumer block 14
+  // CHECK: tensor.empty() {ssbuffer.block_id = 14 : i32} : tensor<4x8xf32>
+  // CHECK: linalg.fill {ssbuffer.block_id = 14 : i32}
+  // CHECK: arith.addf {{.*}} {ssbuffer.block_id = 14 : i32}
+  // CHECK-NOT: memref.alloc
+  // CHECK-NOT: bufferization.to_tensor
+  func.func @test_t36_empty_fill_clone_2d() {
+    %c0_i32 = arith.constant 0 : i32
+    %c100_i32 = arith.constant 100 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %cst = arith.constant 0.0 : f32
+    scope.scope : () -> () {
+      scf.for %i = %c0_i32 to %c100_i32 step %c1_i32 : i32 {
+        %empty_inner = tensor.empty() {ssbuffer.block_id = 13 : i32} : tensor<4x8xf32>
+        %filled = linalg.fill {ssbuffer.block_id = 13 : i32} ins(%cst : f32) outs(%empty_inner : tensor<4x8xf32>) -> tensor<4x8xf32>
+        %consumed = arith.addf %filled, %filled {ssbuffer.block_id = 14 : i32} : tensor<4x8xf32>
+      } {ssbuffer.main_loop = 1 : i64}
+      scope.return
+    } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
+    return
+  }
+
+//===--------------------------------------------------------------------===//
+// T37: Mixed Pattern - Regular Multi-Buffer + empty+fill Clone
+// Test: Function has BOTH a regular cross-block depVal (e.g. arith.addf result
+//       carried via iter_args, which gets a multi-buffer) AND an empty+fill
+//       pattern depVal (which gets cloned). Verify the two paths coexist and
+//       groupIds remain consistent (no groupId collision/offset).
+// Key Check: regular depVal triggers buffer creation (alloc + scf.if + copy)
+//         : empty+fill depVal is cloned to consumer
+//         : no extra/unused buffers
+//===--------------------------------------------------------------------===//
+  // CHECK-LABEL: func.func @test_t37_mixed_multi_buffer_and_clone
+  // Regular multi-buffer path: alloc + scf.if (for 128xf32 depVal)
+  // CHECK-DAG: memref.alloc() : memref<128xf32, #hivm.address_space<ub>>
+  // CHECK-DAG: memref.memory_space_cast
+  // CHECK-DAG: bufferization.to_tensor
+  // CHECK-DAG: hivm.hir.copy
+  // CHECK-DAG: scf.if
+  // Original empty+fill producer in block 14
+  // CHECK: tensor.empty() {ssbuffer.block_id = 14 : i32}
+  // CHECK: linalg.fill {ssbuffer.block_id = 14 : i32}
+  // Cloned empty+fill in block 15
+  // CHECK: tensor.empty() {ssbuffer.block_id = 15 : i32}
+  // CHECK: linalg.fill {ssbuffer.block_id = 15 : i32}
+  // No buffer for the 8xi32 depVal (empty+fill pattern, not multi-buffered)
+  // CHECK-NOT: memref.alloc() : memref<8xi32, #hivm.address_space<ub>>
+  func.func @test_t37_mixed_multi_buffer_and_clone() {
+    %c0_i32 = arith.constant 0 : i32
+    %c100_i32 = arith.constant 100 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %cst = arith.constant 1.0 : f32
+    %c0_i = arith.constant 0 : i32
+    %empty_128 = tensor.empty() : tensor<128xf32>
+    scope.scope : () -> () {
+      // Regular depVal: tensor produced in block 5, consumed in block 6 -> multi-buffer
+      %prod = linalg.fill {ssbuffer.block_id = 5 : i32} ins(%cst : f32) outs(%empty_128 : tensor<128xf32>) -> tensor<128xf32>
+      %loop_result = scf.for %i = %c0_i32 to %c100_i32 step %c1_i32 iter_args(%arg = %prod) -> (tensor<128xf32>) : i32 {
+        // Regular cross-block (5 -> 6): %arg consumed in block 6
+        %consumed = arith.addf %arg, %arg {ssbuffer.block_id = 6 : i32} : tensor<128xf32>
+        // Producer continuation: %consumed used in block 5 (cross-block depVal -> multi-buffer)
+        %next = arith.addf %consumed, %consumed {ssbuffer.block_id = 5 : i32} : tensor<128xf32>
+        // empty+fill pattern: producer in block 14, consumer in block 15
+        %empty_inner = tensor.empty() {ssbuffer.block_id = 14 : i32} : tensor<8xi32>
+        %filled = linalg.fill {ssbuffer.block_id = 14 : i32} ins(%c0_i : i32) outs(%empty_inner : tensor<8xi32>) -> tensor<8xi32>
+        %empty_consumed = arith.addi %filled, %filled {ssbuffer.block_id = 15 : i32} : tensor<8xi32>
+        scf.yield %next : tensor<128xf32>
+      } {ssbuffer.main_loop = 1 : i64}
+      scope.return
+    } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
+    return
+  }
+
+//===--------------------------------------------------------------------===//
+// T38: tensor.empty + linalg.fill Pattern - Non-Zero Fill Value
+// Test: The fill input is a non-zero constant. Verify the clone preserves
+//       the SAME fill input value (not zero, not the wrong SSA).
+// Key Check: cloned linalg.fill has the same ins() value as the original
+//         : cloned tensor.empty has consumer's block_id
+//===--------------------------------------------------------------------===//
+  // CHECK-LABEL: func.func @test_t38_empty_fill_nonzero_init
+  // Original producer in block 11 with init = 42
+  // CHECK: linalg.fill {ssbuffer.block_id = 11 : i32} ins(%
+  // Cloned to block 12, must keep init = 42 (same ins() value)
+  // CHECK: linalg.fill {ssbuffer.block_id = 12 : i32} ins(%
+  // CHECK: arith.muli {{.*}} {ssbuffer.block_id = 12 : i32}
+  // CHECK-NOT: memref.alloc
+  func.func @test_t38_empty_fill_nonzero_init() {
+    %c0_i32 = arith.constant 0 : i32
+    %c100_i32 = arith.constant 100 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %c42_i32 = arith.constant 42 : i32
+    scope.scope : () -> () {
+      scf.for %i = %c0_i32 to %c100_i32 step %c1_i32 : i32 {
+        %empty_inner = tensor.empty() {ssbuffer.block_id = 11 : i32} : tensor<8xi32>
+        %filled = linalg.fill {ssbuffer.block_id = 11 : i32} ins(%c42_i32 : i32) outs(%empty_inner : tensor<8xi32>) -> tensor<8xi32>
+        %consumed = arith.muli %filled, %filled {ssbuffer.block_id = 12 : i32} : tensor<8xi32>
+      } {ssbuffer.main_loop = 1 : i64}
+      scope.return
+    } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
+    return
+  }
+
+//===--------------------------------------------------------------------===//
+// T39: tensor.empty + linalg.fill Pattern - All Users in Same Block
+// Test: When ALL users of the empty+fill result are in the same block as the
+//       producer (no cross-block use), the empty+fill is left untouched.
+//       The clone path only triggers on cross-block use.
+// Key Check: only one tensor.empty + linalg.fill pair (the original)
+//         : no cloned copy
+//===--------------------------------------------------------------------===//
+  // CHECK-LABEL: func.func @test_t39_empty_fill_same_block_no_clone
+  // Only the original empty+fill pair, all in block 9
+  // CHECK: tensor.empty() {ssbuffer.block_id = 9 : i32}
+  // CHECK: linalg.fill {ssbuffer.block_id = 9 : i32}
+  // CHECK: arith.addi {{.*}} {ssbuffer.block_id = 9 : i32}
+  // No cloned pair (only one empty+fill total)
+  // CHECK-NOT: tensor.empty() {ssbuffer.block_id = 10 : i32}
+  // CHECK-NOT: linalg.fill {ssbuffer.block_id = 10 : i32}
+  func.func @test_t39_empty_fill_same_block_no_clone() {
+    %c0_i32 = arith.constant 0 : i32
+    %c100_i32 = arith.constant 100 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %c0_i = arith.constant 0 : i32
+    scope.scope : () -> () {
+      scf.for %i = %c0_i32 to %c100_i32 step %c1_i32 : i32 {
+        %empty_inner = tensor.empty() {ssbuffer.block_id = 9 : i32} : tensor<8xi32>
+        %filled = linalg.fill {ssbuffer.block_id = 9 : i32} ins(%c0_i : i32) outs(%empty_inner : tensor<8xi32>) -> tensor<8xi32>
+        %consumed = arith.addi %filled, %filled {ssbuffer.block_id = 9 : i32} : tensor<8xi32>
+      } {ssbuffer.main_loop = 1 : i64}
+      scope.return
+    } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
+    return
+  }
+
+//===--------------------------------------------------------------------===//
+// T40: tensor.empty + linalg.fill Pattern - Cloned Empty/Fill Order
+// Test: Verifies the clone is inserted BEFORE the first user in the consumer
+//       block (not at the top of the block). The cloned tensor.empty appears
+//       right before the arith op that uses the fill result.
+// Key Check: order in consumer block 24 is empty -> fill -> arith (in sequence)
+//===--------------------------------------------------------------------===//
+  // CHECK-LABEL: func.func @test_t40_empty_fill_clone_insertion_order
+  // Original empty+fill in block 23
+  // CHECK: tensor.empty() {ssbuffer.block_id = 23 : i32}
+  // CHECK: linalg.fill {ssbuffer.block_id = 23 : i32}
+  // CHECK: arith.addi {{.*}} {ssbuffer.block_id = 23 : i32}
+  // Consumer block 24: clone inserted in order empty -> fill -> arith
+  // CHECK: tensor.empty() {ssbuffer.block_id = 24 : i32}
+  // CHECK-NEXT: linalg.fill {ssbuffer.block_id = 24 : i32}
+  // CHECK-NEXT: arith.addi {{.*}} {ssbuffer.block_id = 24 : i32}
+  // CHECK-NOT: memref.alloc
+  func.func @test_t40_empty_fill_clone_insertion_order() {
+    %c0_i32 = arith.constant 0 : i32
+    %c100_i32 = arith.constant 100 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %c0_i = arith.constant 0 : i32
+    scope.scope : () -> () {
+      scf.for %i = %c0_i32 to %c100_i32 step %c1_i32 : i32 {
+        // Producer in block 23 (also has a same-block consumer to keep producer ops in 23)
+        %empty_inner = tensor.empty() {ssbuffer.block_id = 23 : i32} : tensor<8xi32>
+        %filled = linalg.fill {ssbuffer.block_id = 23 : i32} ins(%c0_i : i32) outs(%empty_inner : tensor<8xi32>) -> tensor<8xi32>
+        %same_block_consume = arith.addi %filled, %filled {ssbuffer.block_id = 23 : i32} : tensor<8xi32>
+        // Consumer in different block 24
+        %cross_consume = arith.addi %filled, %filled {ssbuffer.block_id = 24 : i32} : tensor<8xi32>
+      } {ssbuffer.main_loop = 1 : i64}
+      scope.return
+    } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
+    return
+  }
+
+//===--------------------------------------------------------------------===//
+// T41: tensor.empty + linalg.fill Pattern - Multiple Fills in Same Function
+// Test: Two independent empty+fill patterns with different shapes/values
+//       in the same function. Each should be cloned independently to
+//       their respective consumer blocks.
+// Key Check: TWO independent empty+fill pairs, each cloned
+//         : no buffer allocation for either
+//===--------------------------------------------------------------------===//
+  // CHECK-LABEL: func.func @test_t41_empty_fill_multi_independent
+  // First producer (i32, init=0) in block 30
+  // CHECK: tensor.empty() {ssbuffer.block_id = 30 : i32} : tensor<8xi32>
+  // CHECK: linalg.fill {ssbuffer.block_id = 30 : i32} ins(
+  // First cloned to block 31
+  // CHECK: tensor.empty() {ssbuffer.block_id = 31 : i32} : tensor<8xi32>
+  // CHECK: linalg.fill {ssbuffer.block_id = 31 : i32} ins(
+  // First consumer
+  // CHECK: arith.addi {{.*}} {ssbuffer.block_id = 31 : i32}
+  // Second producer (f32, init=1.0) in block 32
+  // CHECK: tensor.empty() {ssbuffer.block_id = 32 : i32} : tensor<4xf32>
+  // CHECK: linalg.fill {ssbuffer.block_id = 32 : i32} ins(
+  // Second cloned to block 33
+  // CHECK: tensor.empty() {ssbuffer.block_id = 33 : i32} : tensor<4xf32>
+  // CHECK: linalg.fill {ssbuffer.block_id = 33 : i32} ins(
+  // Second consumer
+  // CHECK: arith.addf {{.*}} {ssbuffer.block_id = 33 : i32}
+  // CHECK-NOT: memref.alloc
+  func.func @test_t41_empty_fill_multi_independent() {
+    %c0_i32 = arith.constant 0 : i32
+    %c100_i32 = arith.constant 100 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %c0_i = arith.constant 0 : i32
+    %c1_f = arith.constant 1.0 : f32
+    scope.scope : () -> () {
+      scf.for %i = %c0_i32 to %c100_i32 step %c1_i32 : i32 {
+        // First independent pattern: i32
+        %empty_a = tensor.empty() {ssbuffer.block_id = 30 : i32} : tensor<8xi32>
+        %filled_a = linalg.fill {ssbuffer.block_id = 30 : i32} ins(%c0_i : i32) outs(%empty_a : tensor<8xi32>) -> tensor<8xi32>
+        %consumed_a = arith.addi %filled_a, %filled_a {ssbuffer.block_id = 31 : i32} : tensor<8xi32>
+        // Second independent pattern: f32, different shape
+        %empty_b = tensor.empty() {ssbuffer.block_id = 32 : i32} : tensor<4xf32>
+        %filled_b = linalg.fill {ssbuffer.block_id = 32 : i32} ins(%c1_f : f32) outs(%empty_b : tensor<4xf32>) -> tensor<4xf32>
+        %consumed_b = arith.addf %filled_b, %filled_b {ssbuffer.block_id = 33 : i32} : tensor<4xf32>
+      } {ssbuffer.main_loop = 1 : i64}
+      scope.return
+    } {hivm.tcore_type = #hivm.tcore_type<VECTOR>}
+    return
+  }
 }

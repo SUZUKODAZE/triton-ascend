@@ -41,7 +41,6 @@ using namespace triton;
 namespace {
 
 static constexpr llvm::StringLiteral interceptrFunc[] {
-  "parallel_nsa_kernel_topk",
   "chunk_transform_qk_fwd_kernel",
   "_attn_fwd",
   "_attn_bwd",
