@@ -1181,7 +1181,15 @@ LogicalResult ReduceConverter::convertToTargetOpExtended(
 
 bool ScanConverter::isReductionOpSupported(Operation *reductionOp) const
 {
-  return isa<arith::AddFOp, arith::AddIOp, arith::MulFOp, arith::MulIOp>(reductionOp);
+  if (isa<arith::AddFOp, arith::AddIOp, arith::MulFOp, arith::MulIOp>(reductionOp)) {
+    return true;
+  }
+  if (compileOn91095Flag &&
+      isa<arith::MaximumFOp, arith::MaxNumFOp, arith::MinimumFOp,
+          arith::MinNumFOp, arith::MaxSIOp, arith::MinSIOp>(reductionOp)) {
+    return true;
+  }
+  return false;
 }
 
 LogicalResult ScanConverter::convertToTargetOp(
@@ -1195,21 +1203,36 @@ LogicalResult ScanConverter::convertToTargetOp(
   llvm::SmallString<64> funcName;
   auto rop = reductionOps.front();
   if (this->isReductionOpSupported(reductionOps.front())) {
+    bool propagateNan = true;
+    bool isMinMax = false;
     if (isa<arith::AddFOp, arith::AddIOp>(rop)) {
       funcName = "triton_cumsum";
     } else if (isa<arith::MulFOp, arith::MulIOp>(rop)) {
       funcName = "triton_cumprod";
+    } else if (isa<arith::MaximumFOp, arith::MaxNumFOp, arith::MaxSIOp>(rop)) {
+      funcName = "triton_cummax";
+      propagateNan = isa<arith::MaximumFOp>(rop);
+      isMinMax = true;
+    } else if (isa<arith::MinimumFOp, arith::MinNumFOp, arith::MinSIOp>(rop)) {
+      funcName = "triton_cummin";
+      propagateNan = isa<arith::MinimumFOp>(rop);
+      isMinMax = true;
     }
 
     auto moduleOp = op->getParentOfType<ModuleOp>();
     rewriter.setInsertionPoint(moduleOp.getBody(),
-                              std::prev(moduleOp.getBody()->end()));
+                               std::prev(moduleOp.getBody()->end()));
 
     auto loc = op.getLoc();
     auto src = adaptor.getOperands().front();
     auto resTy = op.getResult().front().getType();
-    auto libFnType = rewriter.getFunctionType(
-      {src.getType(), rewriter.getI32Type(), rewriter.getI1Type()}, {resTy});
+    // cummax/cummin take a trailing propagateNan flag; cumsum/cumprod do not.
+    SmallVector<Type> argTypes{src.getType(), rewriter.getI32Type(),
+                               rewriter.getI1Type()};
+    if (isMinMax) {
+      argTypes.push_back(rewriter.getI1Type());
+    }
+    auto libFnType = rewriter.getFunctionType(argTypes, {resTy});
     auto funcOp = rewriter.create<func::FuncOp>(loc, funcName.str(), libFnType);
 
     SymbolTable symTab(moduleOp);
@@ -1224,10 +1247,15 @@ LogicalResult ScanConverter::convertToTargetOp(
     auto scanAxis = op.getAxis();
     auto scanReverse = op.getReverse();
     Value axis = rewriter.create<arith::ConstantIntOp>(loc, scanAxis, 32);
-    Value reverseVal = rewriter.create<arith::ConstantIntOp>(loc, scanReverse, 1);
-    auto callOp = rewriter.create<func::CallOp>(loc, funcOp.getSymNameAttr(),
-                                                TypeRange({resTy}),
-                                                ValueRange({src, axis, reverseVal}));
+    Value reverseVal =
+        rewriter.create<arith::ConstantIntOp>(loc, scanReverse, 1);
+    SmallVector<Value> callOperands{src, axis, reverseVal};
+    if (isMinMax) {
+      callOperands.push_back(
+          rewriter.create<arith::ConstantIntOp>(loc, propagateNan, 1));
+    }
+    auto callOp = rewriter.create<func::CallOp>(
+        loc, funcOp.getSymNameAttr(), TypeRange({resTy}), callOperands);
 
     rewriter.replaceOp(op, callOp);
 
