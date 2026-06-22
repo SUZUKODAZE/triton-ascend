@@ -24,9 +24,11 @@
 #include "ascend/include/DynamicCVPipeline/Common/Utils.h"
 #include "ascend/include/DynamicCVPipeline/Common/MemoryEffectsTracker.h"
 
+#include "bishengir/Dialect/Annotation/IR/Annotation.h"
 #include "mlir/Analysis/AliasAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/IR/Builders.h"
@@ -545,6 +547,9 @@ void DataDependencyAnalysisPass::analyzeMemoryEffect(DataDependencyInfo &info)
         if (op->getNumRegions() > 0) {
             return;
         }
+        if (isa<annotation::MarkOp, gpu::BarrierOp>(op)) {
+            return;
+        }
         auto currBlockIdOpt = CVPipeline::getOpBlockId(op);
         llvm::StringRef currCoreType = getSsbufferCoreType(op);
         if (!currBlockIdOpt || currCoreType.empty()) {
@@ -553,12 +558,18 @@ void DataDependencyAnalysisPass::analyzeMemoryEffect(DataDependencyInfo &info)
         int currBlockId = static_cast<int>(*currBlockIdOpt);
 
         for (mlir::Operation *predOp : memDepGraph.getExecBefore(op)) {
+            if (isa<annotation::MarkOp, gpu::BarrierOp>(predOp)) {
+                continue;
+            }
             if (predOp->getNumRegions() > 0) {
                 auto realdeps = memDepGraph.getRealDependency(predOp, op);
                 if (realdeps.empty()) {
                     return;
                 }
                 for (mlir::Operation *realPredOp : realdeps) {
+                    if (isa<annotation::MarkOp, gpu::BarrierOp>(realPredOp)) {
+                        continue;
+                    }
                     auto realPredBlockIdOpt = CVPipeline::getOpBlockId(realPredOp);
                     llvm::StringRef realPredCoreType = getSsbufferCoreType(realPredOp);
                     if (!realPredBlockIdOpt || realPredCoreType == currCoreType || realPredCoreType.empty()) {
@@ -573,9 +584,11 @@ void DataDependencyAnalysisPass::analyzeMemoryEffect(DataDependencyInfo &info)
                     collectMemDepInfo(realPredCoreType, producerBlockId, consumerBlockId, realPredBlockId, currBlockId, memoryDependencies);
 
                     LOG_DEBUG("\n=op with region mem dep analysis= "
+                        << "\nrealpredcoretype" << realPredCoreType
                         << "\nproducer Block: " << realPredBlockId << "\nproducer Op: " << *realPredOp
                         << "\nconsumer Block: " << currBlockId << "\nconsumer Op: " << *op << "\n");
                 }
+                continue;
             }
             auto predBlockIdOpt = CVPipeline::getOpBlockId(predOp);
             llvm::StringRef predCoreType = getSsbufferCoreType(predOp);
@@ -596,6 +609,7 @@ void DataDependencyAnalysisPass::analyzeMemoryEffect(DataDependencyInfo &info)
             collectMemDepInfo(predCoreType, producerBlockId, consumerBlockId, predBlockId, currBlockId, memoryDependencies);
 
             LOG_DEBUG("\n=mem dep analysis= "
+                << "\npredcoretype" << predCoreType
                 << "\nproducer Block: " << predBlockId << "\nproducer Op: " << *predOp
                 << "\nconsumer Block: " << currBlockId << "\nconsumer Op: " << *op << "\n");
         }

@@ -896,7 +896,7 @@ void InterCoreTransferAndSyncPass::insertInterCoreSync(
 }
 
 void InterCoreTransferAndSyncPass::insertMemDepSync(OpBuilder &builder, Operation *producerOp, Operation *consumerOp,
-    int flag, Location loc, bool isCubeToVector)
+    int flag, Location loc, bool isCubeToVector, FlagIdReuseManager &flagIdReuseManager)
 {
     LOG_DEBUG("Inserting Memdep sync: " << (isCubeToVector ? "CUBE->VECTOR" : "VECTOR->CUBE") << ", flag = " << flag <<
         "\n");
@@ -930,7 +930,9 @@ void InterCoreTransferAndSyncPass::insertMemDepSync(OpBuilder &builder, Operatio
         StringRef consCoreType = isCubeToVector ? "VECTOR" : "CUBE";
         attachCommonTags(waitOp, static_cast<int>(*consBlockIdOpt), consCoreType);
     }
-
+    attachAnalyzeFlagIdTag(setOp);
+    attachAnalyzeFlagIdTag(waitOp);
+    flagIdReuseManager.insertRelationBetweenSetAndWait(setOp, waitOp);
     LOG_DEBUG("[PIPE_MTE2 setOp]: " << *setOp << "\n");
     LOG_DEBUG("[PIPE_MTE2 waitOp]: " << *waitOp << "\n");
 }
@@ -1093,7 +1095,7 @@ LogicalResult InterCoreTransferAndSyncPass::handleCubeToVector(OpBuilder &builde
 
 // Memory Dependency
 LogicalResult InterCoreTransferAndSyncPass::handleMemoryDependency(OpBuilder &builder, DependencyInfo &dep,
-    size_t depIndex, llvm::SmallVector<DependencyInfo> memDependencies, FlagIdManager &flagManager)
+    size_t depIndex, llvm::SmallVector<DependencyInfo> memDependencies, FlagIdManager &flagManager, FlagIdReuseManager &flagIdReuseManager)
 {
     LOG_DEBUG("Handling memory dependency...\n");
 
@@ -1122,7 +1124,7 @@ LogicalResult InterCoreTransferAndSyncPass::handleMemoryDependency(OpBuilder &bu
     Location loc = prodEnd->getLoc();
 
     // Insert Memdep sync
-    insertMemDepSync(builder, prodEnd, consStart, flagId, loc, isCubeToVector);
+    insertMemDepSync(builder, prodEnd, consStart, flagId, loc, isCubeToVector, flagIdReuseManager);
 
     transferIndex++;
 
@@ -1379,7 +1381,7 @@ LogicalResult InterCoreTransferAndSyncPass::processDependencies(
         LOG_DEBUG("[MEMDEP] value = " << dep.value
                     << " producerBlockId = " << dep.producerBlockId
                     << ", consumerBlockId = " << dep.consumerBlockId << "\n");
-        if (failed(handleMemoryDependency(builder, dep, i, memDependencies, flagManager))) {
+        if (failed(handleMemoryDependency(builder, dep, i, memDependencies, flagManager, flagIdReuseManager))) {
             LOG_DEBUG("[ERROR] Memdep failed! producerBlockId = " << dep.producerBlockId
                     << ", consumerBlockId = " << dep.consumerBlockId << "\n");
         return failure();

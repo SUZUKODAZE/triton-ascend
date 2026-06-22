@@ -84,7 +84,8 @@ private:
                                              DependencyInfo &dep,
                                              size_t depIndex,
                                              llvm::SmallVector<DependencyInfo> memDependencies,
-                                             FlagIdManager &flagManager);
+                                             FlagIdManager &flagManager,
+                                             FlagIdReuseManager &flagIdReuseManager);
 
   std::pair<mlir::Operation *, mlir::Operation *> getBlockStartEnd(int blockId, mlir::ModuleOp module);
   bool isOuterLayerDependency(size_t depIndex,
@@ -147,7 +148,7 @@ private:
     mlir::Operation *consumerEndOp, int flag, mlir::Location loc, int transferIndex, FlagIdReuseManager &flagIdReuseManager,
     mlir::Operation *consumedDataOp = nullptr);
   void insertMemDepSync(mlir::OpBuilder &builder, mlir::Operation *producerOp, mlir::Operation *consumerOp, int flag,
-    mlir::Location loc, bool isCubeToVector);
+    mlir::Location loc, bool isCubeToVector, FlagIdReuseManager &flagIdReuseManager);
   void sortDependencies(llvm::SmallVector<DependencyInfo> &dependencies, mlir::ModuleOp module);
   llvm::SmallVector<mlir::Operation *> insertAnalyzeFlagRelations(mlir::ModuleOp module, FlagIdReuseManager &flagIdReuseManager);
   void remapInterCoreTransferFlagIds(llvm::DenseMap<int, int> &remapResult);
