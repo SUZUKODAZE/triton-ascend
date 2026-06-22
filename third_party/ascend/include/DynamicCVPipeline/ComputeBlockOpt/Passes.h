@@ -23,8 +23,6 @@
 #ifndef TRITON_ADAPTER_BLOCK_ID_OPT_PASSES_H
 #define TRITON_ADAPTER_BLOCK_ID_OPT_PASSES_H
 
-#include <memory>
-
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
@@ -37,9 +35,6 @@ void registerUnifyAllocBlockPass();
 std::unique_ptr<OperationPass<ModuleOp>> createMergeVectorIfBlockPass();
 void registerMergeVectorIfBlockPass();
 std::unique_ptr<OperationPass<ModuleOp>> createFixpipeOptPass();
-
-std::unique_ptr<OperationPass<ModuleOp>> createDiscreteLoadStorePass();
-void registerDiscreteLoadStorePass();
 
 } // namespace triton
 } // namespace mlir

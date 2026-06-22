@@ -163,5 +163,12 @@ llvm::LogicalResult ComputeBlockIdManager::markOpsWithNewId(llvm::SmallVectorImp
     return llvm::success();
 }
 
+void ComputeBlockIdManager::reset()
+{
+    cntComputeBlockId = 0;
+    blockIdToOps.clear();
+    opToBlockId.clear();
+}
+
 } // namespace CVPipeline
 } // namespace mlir
