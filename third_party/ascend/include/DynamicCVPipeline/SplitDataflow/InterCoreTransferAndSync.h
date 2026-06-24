@@ -112,6 +112,7 @@ private:
                                         bool isMatmulA,
                                         bool isMatmulB,
                                         bool isOnlyDepInMatmul);
+  bool matmulCIsEmpty(mlir::Value acc);
   void padMatmulInnerDim(OpBuilder &builder, Operation *matmulOp, Location loc, int matmulIndex, int matmulOpBlockId);
   void extractMatmulResult(OpBuilder &builder, Operation *matmulOp, Location loc, int matmulOpBlockId, llvm::DenseMap<mlir::Value, mlir::Value> &cubeValueMapping, bool isOnlyDepInMatmul);
   mlir::Value normalizeIfNeeded(mlir::OpBuilder &builder,
