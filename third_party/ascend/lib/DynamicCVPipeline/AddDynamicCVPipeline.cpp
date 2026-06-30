@@ -87,6 +87,8 @@ void AddDynamicCVPipelinePass::runOnOperation()
     ModuleOp moduleBackup(moduleOp->clone());
     PassManager pm(&getContext(), moduleOp.getOperationName());
 
+    pm.enableTiming();
+
     pm.addPass(createPreCheckAvailablePass());
     pm.addPass(createStandardizeOpPass());
     pm.addPass(createPlanComputeBlockPass());
