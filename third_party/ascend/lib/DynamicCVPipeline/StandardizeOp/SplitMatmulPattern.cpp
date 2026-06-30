@@ -103,6 +103,46 @@ static bool operationIsFillZero(Operation *op)
     return matchPattern(filledVal, m_Zero()) || matchPattern(filledVal, m_AnyZeroFloat());
 }
 
+// The user is responsible for checking biasDefOp is not null.
+// Checks if the bias comes from a small broadcast (1D -> 2D with static shape)
+// whose source data size is below the cache table buffer threshold (4KB).
+// In such cases, the matmul does not need to be split.
+static bool operationIsSmallBroadcast(Operation *op)
+{
+    if (!op) {
+        return false;
+    }
+    auto broadcastOp = dyn_cast<linalg::BroadcastOp>(op);
+    if (!broadcastOp) {
+        return false;
+    }
+    auto insType = dyn_cast<RankedTensorType>(broadcastOp.getDpsInputs()[0].getType());
+    auto outsType = dyn_cast<RankedTensorType>(broadcastOp.getDpsInits()[0].getType());
+    if (!insType || !outsType) {
+        return false;
+    }
+    // Only match 1D -> 2D broadcast
+    if (insType.getRank() != 1 || outsType.getRank() != 2) {
+        return false;
+    }
+    // Must be static shape to compute size
+    if (!insType.hasStaticShape()) {
+        return false;
+    }
+    // Check if the source data fits within the cache table buffer (4KB)
+    constexpr int64_t kCacheTableBufferSize = 4096;
+    auto shape = insType.getShape();
+    int64_t numElements = 1;
+    for (int64_t dim : shape) {
+        numElements *= dim;
+    }
+    int64_t sizeBytes = numElements * insType.getElementTypeBitWidth() / 8;
+    if (sizeBytes < kCacheTableBufferSize) {
+        return true;
+    }
+    return false;
+}
+
 // This generally should always be true, but just for safety...
 static bool isFloatOrInt(RankedTensorType tensorType)
 {
@@ -457,13 +497,16 @@ static bool shouldSplitByInput(linalg::MatmulOp matmulOp, Value &outerOutValue, 
         LOG_DEBUG("Not split because bias is zero. " << matmulOp);
         return false;
     }
+    if (operationIsSmallBroadcast(outerInValue.getDefiningOp())) {
+        LOG_DEBUG("Not split because broadcast bias is small. " << matmulOp);
+        return false;
+    }
     auto defMatmul =
         dyn_cast_if_present<linalg::MatmulOp>(hivm::traceDefOp<linalg::MatmulOp>(outerInValue).value_or(nullptr));
     if (defMatmul) {
         LOG_DEBUG("Not split because L0C remain. " << matmulOp);
         return false;
     }
-    // from broadcast [N]->[M, N] // S11 S12 S19 S20
     return true;
 }
 
