@@ -28,11 +28,9 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-#include <cstdio>
 
 static constexpr const char *DEBUG_TYPE = "BufferCountManager";
 #define LOG_DEBUG(...) LLVM_DEBUG(llvm::dbgs() << " [" << DEBUG_TYPE << "] " << __VA_ARGS__)
-#define DBG_PRINT(...) do { fprintf(stderr, "[BCM] " __VA_ARGS__); fflush(stderr); } while(0)
 
 namespace mlir {
 namespace triton {
@@ -70,33 +68,16 @@ constexpr int kBufferCountWarningThreshold = 3;
 
 BufferCountManager::BufferCountManager(Operation *root) : module_(root->getParentOfType<ModuleOp>())
 {
-    DBG_PRINT("ctor enter, root=%p, module_=%p\n", (void*)root, (void*)module_.getOperation());
-    if (!module_) {
-        DBG_PRINT("FATAL: module_ is null!\n");
-        return;
-    }
     OpBuilder builder(module_.getContext());
-    DBG_PRINT("ctx=%p, builder=%p\n", (void*)module_.getContext(), (void*)&builder);
     for (auto type : {DepType::IntraCore, DepType::InterCore, DepType::LoadStore}) {
-        DBG_PRINT("checking type=%d\n", (int)type);
-        if (module_->getAttrOfType<IntegerAttr>(getAttrName(type))) {
-            DBG_PRINT("  type=%d already set, skip\n", (int)type);
+        if (module_->getAttrOfType<IntegerAttr>(getAttrName(type)))
             continue;
-        }
-        DBG_PRINT("  type=%d not set, writing default\n", (int)type);
         module_->setAttr(getAttrName(type), builder.getI32IntegerAttr(getDefaultCount(type)));
     }
-    DBG_PRINT("ctor exit\n");
 }
 
 void BufferCountManager::setBufferCount(DepType type, int count)
 {
-    DBG_PRINT("setBufferCount enter, type=%d count=%d module_=%p\n",
-              (int)type, count, (void*)module_.getOperation());
-    if (!module_) {
-        DBG_PRINT("FATAL setBufferCount: module_ is null!\n");
-        return;
-    }
     if (count <= 0) {
         LOG_DEBUG("Invalid buffer count: " << count << " (must be > 0)");
         return;
@@ -123,7 +104,6 @@ void BufferCountManager::setBufferCount(DepType type, int count)
             LOG_DEBUG("Unknown DepType: " << static_cast<int>(type));
             break;
     }
-    DBG_PRINT("setBufferCount exit\n");
 }
 
 void BufferCountManager::buildBufferCountMap(
@@ -144,8 +124,6 @@ void BufferCountManager::buildBufferCountMap(
 
 int BufferCountManager::getBufferCountByType(DepType type) const
 {
-    DBG_PRINT("getBufferCountByType enter, type=%d module_=%p\n",
-              (int)type, (void*)module_.getOperation());
     auto attr = module_->getAttrOfType<IntegerAttr>(getAttrName(type));
     int count = static_cast<int>(attr.getInt());
     LOG_DEBUG("getBufferCountByType(" << static_cast<int>(type) << ") = " << count);

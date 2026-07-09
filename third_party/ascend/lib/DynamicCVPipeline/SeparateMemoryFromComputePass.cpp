@@ -26,7 +26,6 @@
 #include "ascend/include/DynamicCVPipeline/Common/BufferCountManager.h"
 #include "ascend/include/DynamicCVPipeline/SeparateMemoryFromCompute/AddMultiBufferToGMLoadPass.h"
 #include "ascend/include/DynamicCVPipeline/SeparateMemoryFromCompute/AsyncLoadHoistingPass.h"
-#include <cstdio>
 
 static constexpr const char *DEBUG_TYPE = "separate-memory-from-compute";
 #define DBGS() (llvm::dbgs() << '[' << DEBUG_TYPE << "] ")
@@ -39,7 +38,6 @@ void SeparateMemoryFromComputePass::runOnOperation()
 {
   ModuleOp module = getOperation();
 
-  fprintf(stderr, "[BCM-CALL] SeparateMemoryFromComputePass.cpp:41 BufferCountManager from module=%p\n", (void*)module.getOperation()); fflush(stderr);
   int depth = BufferCountManager(module).getBufferCountByType(BufferCountManager::DepType::LoadStore);
 
   if (depth <= 1) {

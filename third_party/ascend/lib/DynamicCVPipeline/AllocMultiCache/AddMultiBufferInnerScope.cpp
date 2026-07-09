@@ -25,7 +25,6 @@
 #include "ascend/include/DynamicCVPipeline/Common/Utils.h"
 
 #include <climits>
-#include <cstdio>
 #include "bishengir/Dialect/Annotation/IR/Annotation.h"
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
 #include "bishengir/Dialect/Scope/IR/Scope.h"
@@ -1619,7 +1618,6 @@ static BufferMap insertBuffersBeforeFor(mlir::scf::ForOp forOp, SmallVector<Valu
     OpBuilder insertedBuffers(builder.getContext());
     insertedBuffers.setInsertionPoint(parentBlock, forOp->getIterator());
 
-    fprintf(stderr, "[BCM-CALL] AddMultiBufferInnerScope.cpp:1621 BufferCountManager from forOp=%p\n", (void*)forOp.getOperation()); fflush(stderr);
     BufferCountManager bufferCountMgr(forOp);
     int bufNum = bufferCountMgr.getBufferCountByType(BufferCountManager::DepType::IntraCore);
 

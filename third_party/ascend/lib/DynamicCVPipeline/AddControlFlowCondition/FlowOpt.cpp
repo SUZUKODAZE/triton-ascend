@@ -32,7 +32,6 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
 #include "llvm/Support/Debug.h"
-#include <cstdio>
 
 static constexpr const char *DEBUG_TYPE = "FlowOptPass";
 static constexpr int FLOW_OPT_SUCCESS = 0;
@@ -134,7 +133,6 @@ Value FlowOptPass::buildFlowOptCondition(OpBuilder &builder, Location loc,
 
     // Build condition: counter >= lowerBound + step*(opt_num)
     // opt_num = min(intra-buffer size - 1, cross-buffer size)
-    fprintf(stderr, "[BCM-CALL] FlowOpt.cpp:136 BufferCountManager from forOp=%p\n", (void*)forOp.getOperation()); fflush(stderr);
     BufferCountManager bufferCountMgr(forOp);
     int intraBufNum = bufferCountMgr.getBufferCountByType(BufferCountManager::DepType::IntraCore);
     int crossBufNum = bufferCountMgr.getBufferCountByType(BufferCountManager::DepType::InterCore);

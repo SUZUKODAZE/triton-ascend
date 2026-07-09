@@ -26,7 +26,6 @@
 #include "ascend/include/DynamicCVPipeline/Common/BufferCountManager.h"
 #include "ascend/include/DynamicCVPipeline/DecoupleComputeAndMemory/AddMultiBufferToGMLoadPass.h"
 #include "ascend/include/DynamicCVPipeline/DecoupleComputeAndMemory/AsyncLoadHoistingPass.h"
-#include <cstdio>
 
 static constexpr const char *DEBUG_TYPE = "decouple-compute-and-memory";
 #define DBGS() (llvm::dbgs() << '[' << DEBUG_TYPE << "] ")
@@ -39,7 +38,6 @@ void DecoupleComputeAndMemoryPass::runOnOperation()
 {
   ModuleOp module = getOperation();
 
-  fprintf(stderr, "[BCM-CALL] DecoupleComputeAndMemory.cpp:41 BufferCountManager from module=%p\n", (void*)module.getOperation()); fflush(stderr);
   int depth = BufferCountManager(module).getBufferCountByType(BufferCountManager::DepType::LoadStore);
 
   if (depth <= 1) {
