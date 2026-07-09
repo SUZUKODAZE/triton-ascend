@@ -19,6 +19,8 @@
 #include "ascend/include/DynamicCVPipeline/Common/BufferCountManager.h"
 #include "ascend/include/DynamicCVPipeline/Common/FlagIdManager.h"
 
+#include <cstdio>
+
 static constexpr const char *DEBUG_TYPE = "AddMultiBufferOuterScope";
 static constexpr const char *kTransferId = "ssbuffer.transfer_id";
 static constexpr const char *kCrossDeps = "ssbuffer.crossDeps";
@@ -1034,6 +1036,7 @@ void AddMultiBufferOuterScopePass::runOnOperation()
     }
     LDBG("[Step 1/3] Done: " << groups.size() << " transfer groups");
 
+    fprintf(stderr, "[BCM-CALL] AddMultiBufferOuterScope.cpp:1037 BufferCountManager from module=%p\n", (void*)module.getOperation()); fflush(stderr);
     int interCoreBufNum = BufferCountManager(module)
         .getBufferCountByType(BufferCountManager::DepType::InterCore);
     bool isDoubleBuf = (interCoreBufNum > 1);

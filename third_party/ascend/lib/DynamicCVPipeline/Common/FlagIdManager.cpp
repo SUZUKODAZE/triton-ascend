@@ -25,6 +25,7 @@
 #include "mlir/IR/Operation.h"
 #include "llvm/Support/Debug.h"
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
+#include <cstdio>
 
 using namespace mlir;
 static constexpr const char *DEBUG_TYPE = "flag-id-manager";
@@ -67,6 +68,7 @@ int FlagIdManager::acquireId(Operation* insertionPoint)
 bool FlagIdManager::checkCurrentId()
 {
     BufferCountManager::DepType depType = BufferCountManager::DepType::InterCore;
+    fprintf(stderr, "[BCM-CALL] FlagIdManager.cpp:70 BufferCountManager from module=%p\n", (void*)module.getOperation()); fflush(stderr);
     BufferCountManager bufferCountMgr(module);
     int outerBufferCount = bufferCountMgr.getBufferCountByType(depType);
     if (outerBufferCount > 1) {

@@ -23,6 +23,7 @@
 #include "ascend/include/DynamicCVPipeline/DecoupleComputeAndMemory/AddMultiBufferToGMLoadInternal.h"
 #include "ascend/include/DynamicCVPipeline/DecoupleComputeAndMemory/AddMultiBufferToGMLoadPass.h"
 #include "ascend/include/DynamicCVPipeline/Common/BufferCountManager.h"
+#include <cstdio>
 
 using namespace mlir;
 using namespace triton;
@@ -49,6 +50,7 @@ void AddMultiBufferToGMLoadPass::collectAndGroupMarkedOps()
 
     // Apply depth policy: skip loops whose compile-time trip count is too small
     // to benefit, then record the slot count on each group.
+    fprintf(stderr, "[BCM-CALL] DecoupleComputeAndMemory/AddMultiBufferToGMLoad.cpp:52 BufferCountManager from module=%p\n", (void*)module.getOperation()); fflush(stderr);
     int depth = BufferCountManager(module).getBufferCountByType(BufferCountManager::DepType::LoadStore);
     llvm::erase_if(contexts_, [depth](const ForBufferCtx &context) {
         if (auto tripCount = getConstantTripCount(context.forOp))
