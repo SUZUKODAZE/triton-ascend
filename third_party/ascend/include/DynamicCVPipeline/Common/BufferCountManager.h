@@ -38,6 +38,7 @@ public:
     enum class DepType { IntraCore, InterCore, LoadStore };
 
     explicit BufferCountManager(Operation *root);
+    explicit BufferCountManager(ModuleOp module);
 
     BufferCountManager(const BufferCountManager &) = delete;
     BufferCountManager &operator=(const BufferCountManager &) = delete;
@@ -52,6 +53,7 @@ public:
     int getBufferCountByType(DepType type) const;
 
 private:
+    void initFromModule();
     ModuleOp module_;
 };
 

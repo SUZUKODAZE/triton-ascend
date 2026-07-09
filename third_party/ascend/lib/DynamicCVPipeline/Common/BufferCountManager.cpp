@@ -30,7 +30,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 static constexpr const char *DEBUG_TYPE = "BufferCountManager";
-#define LOG_DEBUG(...) LLVM_DEBUG(llvm::dbgs() << " [" << DEBUG_TYPE << "] " << __VA_ARGS__)
+#define LOG_DEBUG(...) LLVM_DEBUG(llvm::dbgs() << " [" << DEBUG_TYPE << "] " __VA_ARGS__)
 
 namespace mlir {
 namespace triton {
@@ -40,6 +40,7 @@ namespace {
 constexpr int kDefaultIntraBufferCount = 2;
 constexpr int kDefaultInterBufferCount = 1;
 constexpr int kDefaultLoadBufferCount = 1;
+constexpr int kBufferCountWarningThreshold = 3;
 
 inline llvm::StringLiteral getAttrName(BufferCountManager::DepType type) {
     switch (type) {
@@ -64,10 +65,21 @@ inline int getDefaultCount(BufferCountManager::DepType type) {
 
 } // namespace
 
-constexpr int kBufferCountWarningThreshold = 3;
-
-BufferCountManager::BufferCountManager(Operation *root) : module_(root->getParentOfType<ModuleOp>())
+BufferCountManager::BufferCountManager(Operation *root)
+    : module_(root ? root->getParentOfType<ModuleOp>() : ModuleOp())
 {
+    initFromModule();
+}
+
+BufferCountManager::BufferCountManager(ModuleOp module) : module_(module)
+{
+    initFromModule();
+}
+
+void BufferCountManager::initFromModule()
+{
+    if (!module_)
+        return;
     OpBuilder builder(module_.getContext());
     for (auto type : {DepType::IntraCore, DepType::InterCore, DepType::LoadStore}) {
         if (module_->getAttrOfType<IntegerAttr>(getAttrName(type)))
