@@ -1,4 +1,4 @@
-// RUN: triton-opt --remove-ssbuf-attr %s | FileCheck %s
+// RUN: triton-opt --remove-ssbuf-attr %s --split-input-file | FileCheck %s
 
 module {
   // CHECK-LABEL: func.func @test_remove_core_type_and_block_id
@@ -58,6 +58,18 @@ module {
     } else {
       scf.yield %arg1 : tensor<128xf32>
     }
+    return
+  }
+}
+
+// -----
+
+// CHECK-LABEL: func.func @test_remove_buffer_count_module_attrs
+// CHECK-NOT: ssbuffer.intra_buf_count
+// CHECK-NOT: ssbuffer.inter_core_buf_count
+// CHECK-NOT: ssbuffer.load_store_buf_count
+module attributes {ssbuffer.intra_buf_count = 2 : i32, ssbuffer.inter_core_buf_count = 1 : i32, ssbuffer.load_store_buf_count = 1 : i32} {
+  func.func @test_remove_buffer_count_module_attrs() {
     return
   }
 }
