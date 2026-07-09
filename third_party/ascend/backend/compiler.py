@@ -25,6 +25,7 @@ import glob
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -218,6 +219,11 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             enable_select_analysis,
             compile_on_910_95
         )
+        print(f"[DBG-COMPILER] ttir_to_linalg enter, mod={mod}", file=sys.stderr, flush=True)
+        print(f"[DBG-COMPILER] enable_dynamic_cv_pipeline={metadata.get('enable_dynamic_cv_pipeline')}", file=sys.stderr, flush=True)
+        print(f"[DBG-COMPILER] intra_cache_num={metadata.get('intra_cache_num')}", file=sys.stderr, flush=True)
+        print(f"[DBG-COMPILER] inter_cache_num={metadata.get('inter_cache_num')}", file=sys.stderr, flush=True)
+        print(f"[DBG-COMPILER] load_cache_num={metadata.get('load_cache_num')}", file=sys.stderr, flush=True)
         if metadata["enable_dynamic_cv_pipeline"]:
             metadata["set_workspace_multibuffer"] = 0
             metadata["enable_mixed_cv"] = True
@@ -225,21 +231,31 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             ascend.passes.ttir.set_enable_dynamic_cv_flow_optimization(metadata["enable_dynamic_cv_flow_opt"])
             ascend.passes.ttir.set_enable_cube_block_merge(metadata["enable_cube_block_merge"])
 
+            print("[DBG-COMPILER] calling add_dynamic_cv_pipeline", file=sys.stderr, flush=True)
             ascend.passes.ttir.add_dynamic_cv_pipeline(pm, compile_on_910_95)
+            print("[DBG-COMPILER] add_dynamic_cv_pipeline returned", file=sys.stderr, flush=True)
 
         _intra_val = metadata.get("intra_cache_num")
         if _intra_val is not None:
+            print(f"[DBG-COMPILER] set_buffer_count INTRA={_intra_val} mod={mod}", file=sys.stderr, flush=True)
             ascend.passes.ttir.set_buffer_count(mod, "INTRA", _intra_val)
+            print("[DBG-COMPILER] set_buffer_count INTRA returned", file=sys.stderr, flush=True)
 
         _inter_val = metadata.get("inter_cache_num")
         if _inter_val is not None:
+            print(f"[DBG-COMPILER] set_buffer_count INTER={_inter_val} mod={mod}", file=sys.stderr, flush=True)
             ascend.passes.ttir.set_buffer_count(mod, "INTER", _inter_val)
+            print("[DBG-COMPILER] set_buffer_count INTER returned", file=sys.stderr, flush=True)
 
         _load_val = metadata.get("load_cache_num")
         if _load_val is not None:
+            print(f"[DBG-COMPILER] set_buffer_count LOAD={_load_val} mod={mod}", file=sys.stderr, flush=True)
             ascend.passes.ttir.set_buffer_count(mod, "LOAD", _load_val)
+            print("[DBG-COMPILER] set_buffer_count LOAD returned", file=sys.stderr, flush=True)
 
+        print("[DBG-COMPILER] calling pm.run", file=sys.stderr, flush=True)
         pm.run(mod)
+        print("[DBG-COMPILER] pm.run returned", file=sys.stderr, flush=True)
         _adjust_metadata_by_module_result(mod, metadata, opt,
                                           enable_mixed_cv=enable_mixed_cv,
                                           disable_auto_inject_block_sync=disable_auto_inject_block_sync,
