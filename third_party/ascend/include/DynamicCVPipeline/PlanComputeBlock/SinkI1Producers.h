@@ -58,6 +58,8 @@ public:
 
 std::unique_ptr<OperationPass<ModuleOp>> createSinkI1ProducersPass();
 
+void registerSinkI1ProducersPasses();
+
 } // namespace mlir::triton
 
 #endif // TRITON_ADAPTER_DYNAMIC_CV_PIPELINE_PLAN_COMPUTE_BLOCK_SINK_I1_PRODUCERS_H
