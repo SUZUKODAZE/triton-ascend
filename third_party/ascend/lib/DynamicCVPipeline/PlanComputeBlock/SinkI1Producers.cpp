@@ -1,0 +1,170 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+
+#include "ascend/include/DynamicCVPipeline/PlanComputeBlock/SinkI1Producers.h"
+
+#include "DynamicCVPipeline/Common/MemoryEffectsTracker.h"
+#include "DynamicCVPipeline/Common/Utils.h"
+#include "ascend/include/DynamicCVPipeline/ComputeBlockOpt/Common.h"
+#include "ascend/include/DynamicCVPipeline/PlanComputeBlock/Common.h"
+#include "ascend/include/DynamicCVPipeline/PlanComputeBlock/ComputeBlockIdManager.h"
+#include "mlir/Analysis/AliasAnalysis.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Operation.h"
+#include "mlir/IR/Value.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/Debug.h"
+
+static constexpr const char *DEBUG_TYPE = "sink-i1-producers-into-users";
+#define LOG_DEBUG(...)                                                         \
+  LLVM_DEBUG(llvm::dbgs() << " [" << DEBUG_TYPE << "] " << __VA_ARGS__)
+
+using namespace mlir;
+
+namespace {
+
+// Returns true if `op` produces a tensor whose element type is i1
+// (e.g. tensor<...xi8> used as a boolean mask).
+static bool isI1Producer(Operation *op)
+{
+    for (auto result : op->getResults()) {
+        if (auto tensorType = dyn_cast<mlir::TensorType>(result.getType())) {
+            mlir::Type elemType = tensorType.getElementType();
+            if (elemType.isInteger(1)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Returns true if `op` is safe to duplicate: no recursive memory effects
+// and no memory effect interface. arith.cmpi/cmpf/andi/ori/xori/trunci and
+// similar pure value ops fall in this set; scf.if, func.func, loads/stores,
+// and any op with memory effects are excluded.
+static bool isPureAndRegionless(Operation *op)
+{
+    if (op->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
+        return false;
+    if (auto iface = dyn_cast<MemoryEffectOpInterface>(op)) {
+        SmallVector<MemoryEffects::EffectInstance> effects;
+        iface.getEffects(effects);
+        if (!effects.empty())
+            return false;
+    }
+    return true;
+}
+
+} // namespace
+
+namespace mlir::triton {
+
+void SinkI1ProducersIntoUsersPass::runOnOperation()
+{
+    ModuleOp moduleOp = getOperation();
+    auto &aa = getAnalysis<AliasAnalysis>();
+    CVPipeline::MemoryDependenceGraph memGraph(moduleOp, aa);
+    CVPipeline::ComputeBlockIdManager bm(moduleOp);
+
+    SmallVector<Operation *> producers;
+    moduleOp.walk([&](Operation *op) {
+        if (isI1Producer(op) && isPureAndRegionless(op)) {
+            LOG_DEBUG("found i1 producer: " << op->getName() << "\n");
+            producers.push_back(op);
+        }
+    });
+
+    for (Operation *p : producers) {
+        SmallVector<Value> i1Results;
+        for (OpOperand &use : p->getUses()) {
+            Type t = use.get().getType();
+            if (auto tensorType = dyn_cast<mlir::TensorType>(t)) {
+                mlir::Type elemType = tensorType.getElementType();
+                if (elemType.isInteger(1)) {
+                    i1Results.push_back(use.get());
+                }
+            }
+        }
+
+        if (i1Results.empty()) {
+            p->erase();
+            continue;
+        }
+
+        bool hasSameBlockUser = false;
+
+        for (Value v : i1Results) {
+            Operation *consumer = v.getDefiningOp();
+            if (!consumer) {
+                continue;
+            }
+
+            if (bm.isSameBlock(p, consumer)) {
+                hasSameBlockUser = true;
+                continue;
+            }
+
+            int consumerBlockId = bm.getBlockIdByOp(consumer);
+            SmallVector<Operation *> opsToCheck = {p};
+            if (CVPipeline::willCreateCycle(opsToCheck, memGraph, consumerBlockId, bm)) {
+                LOG_DEBUG("would create cycle, skip\n");
+                continue;
+            }
+            Operation *cloned = p->clone();
+            consumer->getBlock()->push_back(cloned);
+            cloned->moveBefore(consumer);
+            if (consumerBlockId != -1) {
+                cloned->setAttr(mlir::CVPipeline::kBlockId,
+                                mlir::IntegerAttr::get(
+                                    mlir::IntegerType::get(p->getContext(),
+                                                           /*bitwidth=*/32),
+                                    consumerBlockId));
+            }
+            unsigned idx = 0;
+            for (unsigned i = 0; i < p->getNumResults(); ++i) {
+                if (p->getResult(i) == v) {
+                    idx = i;
+                    break;
+                }
+            }
+            v.replaceAllUsesWith(cloned->getResult(idx));
+        }
+
+        if (!hasSameBlockUser && p->use_empty())
+            p->erase();
+    }
+}
+
+std::unique_ptr<OperationPass<ModuleOp>> createSinkI1ProducersIntoUsersPass()
+{
+    return std::make_unique<SinkI1ProducersIntoUsersPass>();
+}
+
+void registerSinkI1ProducersIntoUsersPasses()
+{
+    registerPass([]() -> std::unique_ptr<mlir::Pass> {
+        return createSinkI1ProducersIntoUsersPass();
+    });
+}
+
+} // namespace mlir::triton
