@@ -22,8 +22,11 @@
 
 #include "ascend/include/DynamicCVPipeline/PlanComputeBlock/SinkI1Producers.h"
 
-#include "ascend/include/DynamicCVPipeline/Common/Utils.h"
+#include "DynamicCVPipeline/Common/MemoryEffectsTracker.h"
+#include "DynamicCVPipeline/Common/Utils.h"
+#include "ascend/include/DynamicCVPipeline/PlanComputeBlock/Common.h"
 #include "ascend/include/DynamicCVPipeline/PlanComputeBlock/ComputeBlockIdManager.h"
+#include "mlir/Analysis/AliasAnalysis.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
@@ -78,6 +81,8 @@ namespace mlir::triton {
 void SinkI1ProducersIntoUsersPass::runOnOperation()
 {
     ModuleOp moduleOp = getOperation();
+    auto &aa = getAnalysis<AliasAnalysis>();
+    CVPipeline::MemoryDependenceGraph memGraph(moduleOp, aa);
     CVPipeline::ComputeBlockIdManager bm(moduleOp);
 
     SmallVector<Operation *> producers;
@@ -121,6 +126,11 @@ void SinkI1ProducersIntoUsersPass::runOnOperation()
             }
 
             int consumerBlockId = bm.getBlockIdByOp(consumer);
+            SmallVector<Operation *> opsToCheck = {p};
+            if (CVPipeline::willCreateCycle(opsToCheck, memGraph, consumerBlockId, bm)) {
+                LOG_DEBUG("would create cycle, skip\n");
+                continue;
+            }
             Operation *cloned = p->clone();
             consumer->getBlock()->push_back(cloned);
             cloned->moveBefore(consumer);
