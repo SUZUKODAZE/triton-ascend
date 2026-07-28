@@ -38,6 +38,7 @@
 
 #define DEBUG_TYPE "iter-var-opt"
 #define LOG_DEBUG(msg) LLVM_DEBUG(llvm::dbgs() << " [" << DEBUG_TYPE << "] " << msg)
+#define PRINT_DEBUG(msg) llvm::dbgs() << " [iter-var-opt-DEBUG] " << msg << "\n"
 
 using namespace mlir;
 using namespace triton;
@@ -81,8 +82,6 @@ void IterVarOptPass::collectIterArgs(Block *block, llvm::DenseMap<Operation *, I
   auto yieldOp = dyn_cast<scf::YieldOp>(block->getTerminator());
   unsigned numArgs = block->getNumArguments();
   unsigned numYieldOperands = yieldOp.getNumOperands();
-  // ForOp: offset=1 (arg 0 is induction variable)
-  // WhileOp after region: offset=0
   int offset = (int)numArgs - (int)numYieldOperands;
 
   for (unsigned argIdx = 0; argIdx < numYieldOperands; ++argIdx) {
@@ -91,7 +90,6 @@ void IterVarOptPass::collectIterArgs(Block *block, llvm::DenseMap<Operation *, I
       continue;
 
     BlockArgument iterArg = block->getArgument(iterArgIdx);
-    // Only optimize iteration with tensor type
     if (!isa<RankedTensorType>(iterArg.getType()))
       continue;
 
@@ -108,7 +106,6 @@ void IterVarOptPass::collectIterArgs(Block *block, llvm::DenseMap<Operation *, I
         info.updateBlockId = bm.getBlockIdByOp(defInBlock);
         blockIdToUpdateOps[info.updateBlockId].push_back(defInBlock);
       }
-      // collect usage ops for the iteration variable
       for (Operation *user : iterArg.getUsers()) {
         Operation *userInBlock = CVPipeline::getAncestorInBlock(user, block);
         if (userInBlock && userInBlock->getBlock() == block && bm.getBlockIdByOp(userInBlock) != info.updateBlockId) {
@@ -128,10 +125,21 @@ bool IterVarOptPass::splitAndMergeUsageOps(IterArgsInfo &info, Block *loopBody,
                                            CVPipeline::ComputeBlockIdManager &bm) {
 
   int updateBlockId = info.updateBlockId;
-  llvm::DenseMap<Operation *, int> preBlockId;
-  
 
-  // DFS to update all ops that depend on usageOps with same original block ID
+  PRINT_DEBUG("===== splitAndMergeUsageOps START =====");
+  if (info.updateOp) {
+    PRINT_DEBUG("updateOp: " << info.updateOp->getName() << " at blockId=" << updateBlockId);
+  }
+  PRINT_DEBUG("iterArgs: " << info.iterArgs << " (arg" << info.iterArgs.getArgNumber() << ")");
+  PRINT_DEBUG("usageOps count: " << info.usageOps.size());
+  
+  for (Operation *op : info.usageOps) {
+    int opBlockId = bm.getBlockIdByOp(op);
+    PRINT_DEBUG("  usageOp: " << op->getName() << " at blockId=" << opBlockId);
+  }
+
+  llvm::DenseMap<Operation *, int> preBlockId;
+
   llvm::DenseSet<Operation *> visited;
   std::function<void(Operation *, int, int)> dfsUpdateUsers = [&](Operation *op, int originalBlockId, int newBlockId) {
     if (visited.count(op))
@@ -142,7 +150,7 @@ bool IterVarOptPass::splitAndMergeUsageOps(IterArgsInfo &info, Block *loopBody,
       return;
     preBlockId[op] = opBlockId;
     bm.updateBlockId(op, newBlockId);
-    LOG_DEBUG("Change op: " << *op << " from block " << opBlockId << " to " << newBlockId << "\n");
+    PRINT_DEBUG("  [dfsUpdateUsers] Change op: " << op->getName() << " from blockId=" << opBlockId << " to " << newBlockId);
 
     for (Operation *user : op->getUsers()) {
       Operation *userInBlock = CVPipeline::getAncestorInBlock(user, loopBody);
@@ -159,10 +167,10 @@ bool IterVarOptPass::splitAndMergeUsageOps(IterArgsInfo &info, Block *loopBody,
     int usageBlockId = bm.getBlockIdByOp(usageOp);
     newUsageBlocks.push_back(newBlockId);
     visited.clear();
+    PRINT_DEBUG("  Calling dfsUpdateUsers for usageOp: " << usageOp->getName() << " from blockId=" << usageBlockId << " to newBlockId=" << newBlockId);
     dfsUpdateUsers(usageOp, usageBlockId, newBlockId);
   }
   
-  // Check if any of the new usage blocks create a cycle with the update block
   auto finalOneBlockId = bm.getNextId();
   SmallVector<Operation *> allOpsToCheck;
   for (auto newId: newUsageBlocks) {
@@ -170,14 +178,33 @@ bool IterVarOptPass::splitAndMergeUsageOps(IterArgsInfo &info, Block *loopBody,
       allOpsToCheck.push_back(op);
     }
   }
-  if(!CVPipeline::willCreateCycle(allOpsToCheck, memGraph, finalOneBlockId, bm)) {
-    // Merge all new usage blocks into one block
+
+  PRINT_DEBUG("  allOpsToCheck count: " << allOpsToCheck.size());
+  for (auto op : allOpsToCheck) {
+    int opBlockId = bm.getBlockIdByOp(op);
+    PRINT_DEBUG("    op: " << op->getName() << " at blockId=" << opBlockId);
+  }
+  PRINT_DEBUG("  finalOneBlockId=" << finalOneBlockId);
+  PRINT_DEBUG("  Calling willCreateCycle...");
+  
+  bool willCreateCycleResult = CVPipeline::willCreateCycle(allOpsToCheck, memGraph, finalOneBlockId, bm);
+  
+  if (willCreateCycleResult) {
+    PRINT_DEBUG("  willCreateCycle returned TRUE - CYCLE DETECTED!");
+  } else {
+    PRINT_DEBUG("  willCreateCycle returned FALSE - NO CYCLE");
+  }
+
+  if(!willCreateCycleResult) {
+    PRINT_DEBUG("  Merging all ops to finalOneBlockId=" << finalOneBlockId);
     for (auto op: allOpsToCheck) {
       bm.updateBlockId(op, finalOneBlockId);
     }
-    LOG_DEBUG("Merged usage ops into block " << finalOneBlockId << "\n");
+    PRINT_DEBUG("  Merged usage ops into block " << finalOneBlockId);
+    PRINT_DEBUG("===== splitAndMergeUsageOps END (return true) =====\n");
     return true;
   } else {
+    PRINT_DEBUG("===== splitAndMergeUsageOps END (return false) =====\n");
     return false;
   }
 }
@@ -186,7 +213,6 @@ bool IterVarOptPass::splitAndMergeUsageOps(IterArgsInfo &info, Block *loopBody,
 
 void IterVarOptPass::processLoopBlock(Block *block, const CVPipeline::MemoryDependenceGraph &memGraph,
                                       CVPipeline::ComputeBlockIdManager &bm) {
-  // Phase 1: Collect iteration variables, update ops, and usage ops
   llvm::DenseMap<Operation *, IterArgsInfo> iterArgsInfos;
   llvm::DenseMap<int, llvm::SmallVector<Operation *>> blockIdToUpdateOps;
 
@@ -197,10 +223,10 @@ void IterVarOptPass::processLoopBlock(Block *block, const CVPipeline::MemoryDepe
 
   LOG_DEBUG("Collected " << iterArgsInfos.size() << " iteration variables in block\n");
 
-  // Phase 2: Split usage ops for each iteration variable
   for (auto &entry : iterArgsInfos) {
     LOG_DEBUG("Processing iteration variable with update op: " << *entry.first << "\n");
-    splitAndMergeUsageOps(entry.second, block, memGraph, bm);
+    bool result = splitAndMergeUsageOps(entry.second, block, memGraph, bm);
+    PRINT_DEBUG("[processLoopBlock] splitAndMergeUsageOps returned: " << result);
   }
 }
 
