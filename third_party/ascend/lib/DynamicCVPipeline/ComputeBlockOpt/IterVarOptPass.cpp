@@ -126,63 +126,64 @@ void IterVarOptPass::collectIterArgs(Block *block, llvm::DenseMap<Operation *, I
 bool IterVarOptPass::splitAndMergeUsageOps(IterArgsInfo &info, Block *loopBody,
                                            const CVPipeline::MemoryDependenceGraph &memGraph,
                                            CVPipeline::ComputeBlockIdManager &bm) {
-
   int updateBlockId = info.updateBlockId;
-  llvm::DenseMap<Operation *, int> preBlockId;
-  
 
-  // DFS to update all ops that depend on usageOps with same original block ID
   llvm::DenseSet<Operation *> visited;
-  std::function<void(Operation *, int, int)> dfsUpdateUsers = [&](Operation *op, int originalBlockId, int newBlockId) {
+  llvm::SmallVector<Operation *> allOpsToMove;
+
+  std::function<void(Operation *, int)> collectOpsToMove = [&](Operation *op, int originalBlockId) {
     if (visited.count(op))
       return;
     visited.insert(op);
     int opBlockId = bm.getBlockIdByOp(op);
     if (opBlockId != originalBlockId)
       return;
-    preBlockId[op] = opBlockId;
-    bm.updateBlockId(op, newBlockId);
-    LOG_DEBUG("Change op: " << *op << " from block " << opBlockId << " to " << newBlockId << "\n");
+    allOpsToMove.push_back(op);
 
     for (Operation *user : op->getUsers()) {
       Operation *userInBlock = CVPipeline::getAncestorInBlock(user, loopBody);
       if (userInBlock) {
-        dfsUpdateUsers(userInBlock, originalBlockId, newBlockId);
+        collectOpsToMove(userInBlock, originalBlockId);
       }
     }
   };
 
-
-  llvm::SmallVector<int> newUsageBlocks;
+  llvm::SmallVector<int> usageBlockIds;
   for (Operation *usageOp : info.usageOps) {
-    int newBlockId = bm.getNextId();
     int usageBlockId = bm.getBlockIdByOp(usageOp);
-    newUsageBlocks.push_back(newBlockId);
+    usageBlockIds.push_back(usageBlockId);
     visited.clear();
-    dfsUpdateUsers(usageOp, usageBlockId, newBlockId);
+    collectOpsToMove(usageOp, usageBlockId);
   }
-  
-  // Check if any of the new usage blocks create a cycle with the update block
+
   auto finalOneBlockId = bm.getNextId();
-  SmallVector<Operation *> allOpsToCheck;
-  for (auto newId: newUsageBlocks) {
-    for (auto op: bm.getOpsByBlockId(newId)) {
-      allOpsToCheck.push_back(op);
-    }
-  }
-  if(!CVPipeline::willCreateCycle(allOpsToCheck, memGraph, finalOneBlockId, bm)) {
-    // Merge all new usage blocks into one block
-    for (auto op: allOpsToCheck) {
-      bm.updateBlockId(op, finalOneBlockId);
-    }
-    LOG_DEBUG("Merged usage ops into block " << finalOneBlockId << "\n");
-    return true;
-  } else {
+  if (CVPipeline::willCreateCycle(allOpsToMove, memGraph, finalOneBlockId, bm)) {
     return false;
   }
+
+  llvm::DenseMap<Operation *, int> opToNewBlockId;
+  int currentNewBlockId = bm.getNextId();
+  for (size_t i = 0; i < usageBlockIds.size(); ++i) {
+    int originalBlockId = usageBlockIds[i];
+    for (Operation *op : allOpsToMove) {
+      if (bm.getBlockIdByOp(op) == originalBlockId) {
+        opToNewBlockId[op] = currentNewBlockId;
+      }
+    }
+    currentNewBlockId = bm.getNextId();
+  }
+
+  for (auto &kv : opToNewBlockId) {
+    bm.updateBlockId(kv.first, kv.second);
+  }
+
+  for (auto &kv : opToNewBlockId) {
+    bm.updateBlockId(kv.first, finalOneBlockId);
+  }
+
+  LOG_DEBUG("Merged usage ops into block " << finalOneBlockId << "\n");
+  return true;
 }
-
-
 
 void IterVarOptPass::processLoopBlock(Block *block, const CVPipeline::MemoryDependenceGraph &memGraph,
                                       CVPipeline::ComputeBlockIdManager &bm) {

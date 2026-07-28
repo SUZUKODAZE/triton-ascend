@@ -64,7 +64,7 @@ void ComputeBlockOptPass::runOnOperation() {
   pm.addPass(createReorderOpsByBlockIdPass());
 
   pm.addPass(createSinkI1ProducersIntoUsersPass());
-  // pm.addPass(createIterVarOptPass());
+  pm.addPass(createIterVarOptPass());
   pm.addPass(createReorderOpsByBlockIdPass());
 
   pm.addPass(createFixpipeOptPass());
