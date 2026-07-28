@@ -938,15 +938,15 @@ void mlir::triton::UBUsageOptPass::runOnOperation() {
     if (UBUsageOptimization(block, memDepGraph, bm).failed()) {
       llvm::errs() << "UB usage optimization failed in block.\n";
     }
-    if (isUBRefineOptEnabled) {
-      if (optBroadcast(block, memDepGraph, bm).failed()) {
-        llvm::errs() << "Broadcast check failed in block.\n";
-      }
+    // if (isUBRefineOptEnabled) {
+    //   if (optBroadcast(block, memDepGraph, bm).failed()) {
+    //     llvm::errs() << "Broadcast check failed in block.\n";
+    //   }
 
-      if (optSmallBlock(block, memDepGraph, bm).failed()) {
-        llvm::errs() << "Small block optimization failed in block.\n";
-      }
-    }
+    //   if (optSmallBlock(block, memDepGraph, bm).failed()) {
+    //     llvm::errs() << "Small block optimization failed in block.\n";
+    //   }
+    // }
   }
 
   LOG_DEBUG("=== Pass UBUsageOpt complete ===\n");

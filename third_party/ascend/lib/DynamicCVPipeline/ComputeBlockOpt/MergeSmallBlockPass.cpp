@@ -124,7 +124,7 @@ getUpBlock(int nowBlockId, Block *block,
     return std::nullopt;
   }
 
-  if (llvm::any_of(boundaryPairs, [&](std::pair<Operation*, Operation *> pr) {
+  if (llvm::all_of(boundaryPairs, [&](std::pair<Operation*, Operation *> pr) {
         auto defOp = pr.first;
         auto userOp = pr.second;
         return isShapeChangeOp(defOp) || isShapeChangeOp(userOp);
@@ -172,7 +172,7 @@ getDownBlock(int nowBlockId, Block *block,
     return std::nullopt;
   }
 
-  if (llvm::any_of(boundaryPairs, [&](std::pair<Operation*, Operation *> pr) {
+  if (llvm::all_of(boundaryPairs, [&](std::pair<Operation*, Operation *> pr) {
         auto defOp = pr.first;
         auto userOp = pr.second;
         return isShapeChangeOp(defOp) || isShapeChangeOp(userOp);
@@ -269,9 +269,9 @@ public:
             LOG_DEBUG("would create cycle, skip\n");
             continue;
           }
-          LOG_DEBUG("Merging downstream block " << downBlock.value()
+          LOG_DEBUG("Merging downstream block " << nowBlockId
                                                 << " into block "
-                                                << nowBlockId);
+                                                << downBlock.value());
           for (Operation *op : ops) {
             bm.updateBlockId(op, downBlock.value());
           }
