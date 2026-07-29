@@ -137,17 +137,10 @@ void SinkI1ProducersIntoUsersPass::runOnOperation() {
 
           int consumerBlockId = bm.getBlockIdByOp(consumer);
           LOG_DEBUG("    consumerBlockId: " << consumerBlockId << "\n");
-          SmallVector<Operation *> opsToCheck = {p};
-          if (CVPipeline::willCreateCycle(opsToCheck, memGraph, consumerBlockId, bm)) {
-            LOG_DEBUG("    willCreateCycle=true, skip\n");
-            continue;
-          }
-          LOG_DEBUG("    willCreateCycle=false, cloning producer\n");
 
           Operation *cloned = p->clone();
           consumer->getBlock()->push_back(cloned);
           cloned->moveBefore(consumer);
-          LOG_DEBUG("    cloned: " << *cloned << "\n");
           if (consumerBlockId != -1) {
             cloned->setAttr(mlir::CVPipeline::kBlockId,
                             mlir::IntegerAttr::get(
@@ -155,6 +148,14 @@ void SinkI1ProducersIntoUsersPass::runOnOperation() {
                                 consumerBlockId));
           }
           consumer->getOpOperand(use.getOperandNumber()).set(cloned->getResult(idx));
+
+          SmallVector<Operation *> opsToCheck = {cloned};
+          if (CVPipeline::willCreateCycle(opsToCheck, memGraph, consumerBlockId, bm)) {
+            LOG_DEBUG("    willCreateCycle=true, rollback clone\n");
+            cloned->erase();
+            continue;
+          }
+          LOG_DEBUG("    willCreateCycle=false, keep cloned op: " << *cloned << "\n");
         }
       }
     }
