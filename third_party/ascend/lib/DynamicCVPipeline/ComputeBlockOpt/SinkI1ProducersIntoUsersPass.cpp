@@ -94,6 +94,9 @@ namespace triton {
 
 void SinkI1ProducersIntoUsersPass::runOnOperation() {
   ModuleOp moduleOp = getOperation();
+  LOG_DEBUG("=== SinkI1ProducersIntoUsersPass start ===\n");
+  LOG_DEBUG("Module: " << moduleOp.getName() << "\n");
+
   auto &aa = getAnalysis<AliasAnalysis>();
   CVPipeline::MemoryDependenceGraph memGraph(moduleOp, aa);
   CVPipeline::ComputeBlockIdManager bm(moduleOp);
@@ -101,12 +104,14 @@ void SinkI1ProducersIntoUsersPass::runOnOperation() {
   SmallVector<Operation *> producers;
   moduleOp.walk([&](Operation *op) {
     if (isI1Producer(op) && isPureAndRegionless(op)) {
-      LOG_DEBUG("found i1 producer: " << op->getName() << "\n");
+      LOG_DEBUG("found i1 producer: " << op->getName() << " at " << op << "\n");
       producers.push_back(op);
     }
   });
+  LOG_DEBUG("total i1 producers found: " << producers.size() << "\n");
 
   for (Operation *p : producers) {
+    LOG_DEBUG("processing producer: " << p->getName() << " at " << p << "\n");
     bool hasSameBlockUser = false;
 
     for (OpOperand &use : p->getUses()) {
@@ -115,7 +120,9 @@ void SinkI1ProducersIntoUsersPass::runOnOperation() {
         mlir::Type elemType = tensorType.getElementType();
         if (elemType.isInteger(1)) {
           Operation *consumer = use.getOwner();
+          LOG_DEBUG("  consumer: " << consumer->getName() << " at " << consumer << "\n");
           if (bm.isSameBlock(p, consumer)) {
+            LOG_DEBUG("    same block user, skip\n");
             hasSameBlockUser = true;
             continue;
           }
@@ -129,15 +136,18 @@ void SinkI1ProducersIntoUsersPass::runOnOperation() {
           }
 
           int consumerBlockId = bm.getBlockIdByOp(consumer);
+          LOG_DEBUG("    consumerBlockId: " << consumerBlockId << "\n");
           SmallVector<Operation *> opsToCheck = {p};
           if (CVPipeline::willCreateCycle(opsToCheck, memGraph, consumerBlockId, bm)) {
-            LOG_DEBUG("would create cycle, skip\n");
+            LOG_DEBUG("    would create cycle, skip\n");
             continue;
           }
 
+          LOG_DEBUG("    cloning producer for consumer\n");
           Operation *cloned = p->clone();
           consumer->getBlock()->push_back(cloned);
           cloned->moveBefore(consumer);
+          LOG_DEBUG("    cloned at " << cloned << ", setting blockId: " << consumerBlockId << "\n");
           if (consumerBlockId != -1) {
             cloned->setAttr(mlir::CVPipeline::kBlockId,
                             mlir::IntegerAttr::get(
@@ -149,9 +159,12 @@ void SinkI1ProducersIntoUsersPass::runOnOperation() {
       }
     }
 
-    if (!hasSameBlockUser && p->use_empty())
+    if (!hasSameBlockUser && p->use_empty()) {
+      LOG_DEBUG("  erasing producer: " << p->getName() << "\n");
       p->erase();
+    }
   }
+  LOG_DEBUG("=== SinkI1ProducersIntoUsersPass done ===\n");
 }
 
 std::unique_ptr<OperationPass<ModuleOp>> createSinkI1ProducersIntoUsersPass() {
