@@ -186,6 +186,7 @@ bool willCreateCycle(llvm::ArrayRef<Operation *> opsToUnify,
     bm.updateBlockId(op, origBlockId);
   }
 
+  LOG_DEBUG("willCreateCycle result: " << (hasCycle ? "true (has cycle)" : "false (no cycle)"));
   return hasCycle;
 }
 
