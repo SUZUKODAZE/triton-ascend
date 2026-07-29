@@ -104,14 +104,14 @@ void SinkI1ProducersIntoUsersPass::runOnOperation() {
   SmallVector<Operation *> producers;
   moduleOp.walk([&](Operation *op) {
     if (isI1Producer(op) && isPureAndRegionless(op)) {
-      LOG_DEBUG("found i1 producer: " << op->getName() << "\n");
+      LOG_DEBUG("found i1 producer: " << *op << "\n");
       producers.push_back(op);
     }
   });
   LOG_DEBUG("total i1 producers found: " << producers.size() << "\n");
 
   for (Operation *p : producers) {
-    LOG_DEBUG("processing producer: " << p->getName() << "\n");
+    LOG_DEBUG("processing producer: " << *p << "\n");
     bool hasSameBlockUser = false;
 
     for (OpOperand &use : p->getUses()) {
@@ -120,7 +120,7 @@ void SinkI1ProducersIntoUsersPass::runOnOperation() {
         mlir::Type elemType = tensorType.getElementType();
         if (elemType.isInteger(1)) {
           Operation *consumer = use.getOwner();
-          LOG_DEBUG("  consumer: " << consumer->getName() << "\n");
+          LOG_DEBUG("  consumer: " << *consumer << "\n");
           if (bm.isSameBlock(p, consumer)) {
             LOG_DEBUG("    same block user, skip\n");
             hasSameBlockUser = true;
@@ -147,7 +147,7 @@ void SinkI1ProducersIntoUsersPass::runOnOperation() {
           Operation *cloned = p->clone();
           consumer->getBlock()->push_back(cloned);
           cloned->moveBefore(consumer);
-          LOG_DEBUG("    cloned: " << cloned->getName() << "\n");
+          LOG_DEBUG("    cloned: " << *cloned << "\n");
           if (consumerBlockId != -1) {
             cloned->setAttr(mlir::CVPipeline::kBlockId,
                             mlir::IntegerAttr::get(
@@ -160,10 +160,10 @@ void SinkI1ProducersIntoUsersPass::runOnOperation() {
     }
 
     if (!hasSameBlockUser && p->use_empty()) {
-      LOG_DEBUG("  erasing producer (no same-block user, use_empty=true): " << p->getName() << "\n");
+      LOG_DEBUG("  erasing producer (no same-block user, use_empty=true): " << *p << "\n");
       p->erase();
     } else if (!hasSameBlockUser) {
-      LOG_DEBUG("  keep producer (has users but no same-block user): " << p->getName() << "\n");
+      LOG_DEBUG("  keep producer (has users but no same-block user): " << *p << "\n");
     }
   }
   LOG_DEBUG("=== SinkI1ProducersIntoUsersPass done ===\n");
