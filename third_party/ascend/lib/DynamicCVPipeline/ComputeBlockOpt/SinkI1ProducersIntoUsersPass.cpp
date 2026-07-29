@@ -147,6 +147,7 @@ void SinkI1ProducersIntoUsersPass::runOnOperation() {
                             mlir::IntegerType::get(p->getContext(), 32),
                             consumerBlockId));
       }
+      bm.updateBlockId(cloned, consumerBlockId);
 
       SmallVector<Operation *> opsToCheck = {cloned};
       if (CVPipeline::willCreateCycle(opsToCheck, memGraph, consumerBlockId, bm)) {
