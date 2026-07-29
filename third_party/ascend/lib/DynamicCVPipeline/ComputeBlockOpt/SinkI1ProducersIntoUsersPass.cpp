@@ -141,21 +141,22 @@ void SinkI1ProducersIntoUsersPass::runOnOperation() {
 
       int consumerBlockId = bm.getBlockIdByOp(consumer);
       Operation *cloned = p->clone();
-      consumer->getBlock()->push_back(cloned);
-      cloned->moveBefore(consumer);
       if (consumerBlockId != -1) {
         cloned->setAttr(mlir::CVPipeline::kBlockId,
                         mlir::IntegerAttr::get(
                             mlir::IntegerType::get(p->getContext(), 32),
                             consumerBlockId));
       }
-      use->set(cloned->getResult(resultIdx));
 
       SmallVector<Operation *> opsToCheck = {cloned};
       if (CVPipeline::willCreateCycle(opsToCheck, memGraph, consumerBlockId, bm)) {
-        cloned->erase();
+        delete cloned;
         continue;
       }
+
+      consumer->getBlock()->push_back(cloned);
+      cloned->moveBefore(consumer);
+      use->set(cloned->getResult(resultIdx));
     }
 
     if (!hasSameBlockUser && p->use_empty())
