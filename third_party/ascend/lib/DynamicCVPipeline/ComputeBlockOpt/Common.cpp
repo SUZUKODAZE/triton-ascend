@@ -60,7 +60,8 @@ struct CycleDfs {
   const MemoryDependenceGraph &memGraph;
   ComputeBlockIdManager &bm;
   Block *block;
-  void clear() { visited.clear(); }
+  SmallVector<Operation *> path;
+  void clear() { visited.clear(); path.clear(); }
   bool operator()(Operation *cur);
   bool dfs(Operation *cur) { return (*this)(cur); };
   CycleDfs(Block *block, const MemoryDependenceGraph &memGraph,
@@ -70,11 +71,17 @@ struct CycleDfs {
 
 bool CycleDfs::operator()(Operation *cur) {
   if (okSet.contains(cur)) {
+    LOG_DEBUG("[CycleDfs] Cycle found! path:");
+    for (auto *p : path) {
+      LOG_DEBUG("  -> " << *p);
+    }
+    LOG_DEBUG("  -> " << *cur << " (in okSet, closes the cycle)");
     return true;
   }
   if (!visited.insert(cur).second) {
     return false;
   }
+  path.push_back(cur);
 
   SmallVector<Operation *> allusers;
   allusers.append(cur->getUsers().begin(), cur->getUsers().end());
@@ -86,8 +93,12 @@ bool CycleDfs::operator()(Operation *cur) {
     if (!userInBlock)
       continue;
     if (okSet.contains(userInBlock)) {
-      LOG_DEBUG(
-          "[CycleDfs] Cycle found, userInBlock in okSet: " << *userInBlock);
+      LOG_DEBUG("[CycleDfs] Cycle found! path:");
+      for (auto *p : path) {
+        LOG_DEBUG("  -> " << *p);
+      }
+      LOG_DEBUG("  -> " << *cur << " -> " << *userInBlock << " (in okSet, closes the cycle)");
+      path.pop_back();
       return true;
     }
     int userBlockId = bm.getBlockIdByOp(userInBlock);
@@ -102,6 +113,10 @@ bool CycleDfs::operator()(Operation *cur) {
         }
       }
     }
+  }
+  path.pop_back();
+  return false;
+}
   }
   return false;
 }
