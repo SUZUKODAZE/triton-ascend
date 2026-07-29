@@ -159,6 +159,7 @@ bool willCreateCycle(llvm::ArrayRef<Operation *> opsToUnify,
       if (userBlockId == -1) {
         dfs.clear();
         if (dfs(userInBlock)) {
+          LOG_DEBUG("cycle detected! userInBlock: " << *userInBlock);
           hasCycle = true;
           break;
         }
@@ -169,6 +170,7 @@ bool willCreateCycle(llvm::ArrayRef<Operation *> opsToUnify,
           dfs.clear();
           LOG_DEBUG("userOp: " << *userOp);
           if (dfs(userOp)) {
+            LOG_DEBUG("cycle detected! userOp: " << *userOp);
             hasCycle = true;
             break;
           }
