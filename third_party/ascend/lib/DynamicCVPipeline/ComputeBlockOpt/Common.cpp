@@ -111,6 +111,12 @@ bool CycleDfs::operator()(Operation *cur) {
 bool willCreateCycle(llvm::ArrayRef<Operation *> opsToUnify,
                      const MemoryDependenceGraph &memGraph, int targetBlockId,
                      ComputeBlockIdManager &bm) {
+  LOG_DEBUG("=== willCreateCycle check ===");
+  LOG_DEBUG("targetBlockId: " << targetBlockId);
+  LOG_DEBUG("opsToUnify:");
+  for (auto *op : opsToUnify) {
+    LOG_DEBUG("  - " << *op);
+  }
   if (opsToUnify.empty()) {
     return false;
   }
