@@ -140,11 +140,6 @@ void SinkI1ProducersIntoUsersPass::runOnOperation() {
       }
 
       int consumerBlockId = bm.getBlockIdByOp(consumer);
-      SmallVector<Operation *> opsToCheck = {p};
-      if (CVPipeline::willCreateCycle(opsToCheck, memGraph, consumerBlockId, bm)) {
-        LOG_DEBUG("would create cycle, skip\n");
-        continue;
-      }
       Operation *cloned = p->clone();
       consumer->getBlock()->push_back(cloned);
       cloned->moveBefore(consumer);
@@ -155,6 +150,12 @@ void SinkI1ProducersIntoUsersPass::runOnOperation() {
                             consumerBlockId));
       }
       use->set(cloned->getResult(resultIdx));
+
+      SmallVector<Operation *> opsToCheck = {cloned};
+      if (CVPipeline::willCreateCycle(opsToCheck, memGraph, consumerBlockId, bm)) {
+        cloned->erase();
+        continue;
+      }
     }
 
     if (!hasSameBlockUser && p->use_empty())
