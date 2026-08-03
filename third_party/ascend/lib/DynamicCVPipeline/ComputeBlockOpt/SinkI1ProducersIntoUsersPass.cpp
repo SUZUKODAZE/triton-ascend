@@ -111,31 +111,26 @@ void SinkI1ProducersIntoUsersPass::runOnOperation() {
   });
 
   for (Operation *p : producers) {
-    SmallVector<std::pair<OpOperand *, unsigned>> i1Uses;
+    SmallVector<unsigned> i1UseOperandIndices;
     for (OpOperand &use : p->getUses()) {
       Type t = use.get().getType();
-      bool isi1 = false;
       if (auto tensorType = dyn_cast<mlir::TensorType>(t)) {
-        mlir::Type elemType = tensorType.getElementType();
-        if (elemType.isInteger(1)) {
-          isi1 = true;
+        if (tensorType.getElementType().isInteger(1)) {
+          i1UseOperandIndices.push_back(use.getOperandNumber());
         }
-      }
-      if (isi1) {
-        unsigned idx = use.getOperandNumber();
-        i1Uses.push_back({&use, idx});
       }
     }
 
-    if (i1Uses.empty()) {
+    if (i1UseOperandIndices.empty()) {
       p->erase();
       continue;
     }
 
     bool hasSameBlockUser = false;
 
-    for (auto [use, resultIdx] : i1Uses) {
-      Operation *consumer = use->getOwner();
+    for (unsigned operandIdx : i1UseOperandIndices) {
+      OpOperand &use = p->getOpOperand(operandIdx);
+      Operation *consumer = use.getOwner();
 
       if (bm.isSameBlock(p, consumer)) {
         hasSameBlockUser = true;
@@ -144,13 +139,13 @@ void SinkI1ProducersIntoUsersPass::runOnOperation() {
 
       int consumerBlockId = bm.getBlockIdByOp(consumer);
       Operation *cloned = p->clone();
-      use->set(cloned->getResult(resultIdx));
+      use.set(cloned->getResult(operandIdx));
       bm.updateBlockId(cloned, consumerBlockId);
 
       SmallVector<Operation *> opsToCheck = {cloned};
       if (CVPipeline::willCreateCycle(opsToCheck, memGraph, consumerBlockId,
                                       bm)) {
-        use->set(p->getResult(resultIdx));
+        use.set(p->getResult(operandIdx));
         cloned->erase();
         continue;
       }
