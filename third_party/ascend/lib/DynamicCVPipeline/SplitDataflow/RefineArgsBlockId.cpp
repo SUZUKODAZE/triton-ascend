@@ -23,6 +23,7 @@
 #include "ascend/include/DynamicCVPipeline/SplitDataflow/RefineArgsBlockId.h"
 #include "DynamicCVPipeline/Common/MemoryEffectsTracker.h"
 #include "ascend/include/DynamicCVPipeline/Common/Utils.h"
+#include "ascend/include/DynamicCVPipeline/ComputeBlockOpt/Common.h"
 #include "ascend/include/DynamicCVPipeline/PlanComputeBlock/Common.h"
 #include "ascend/include/DynamicCVPipeline/PlanComputeBlock/ComputeBlockIdManager.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -38,6 +39,54 @@ static constexpr const char *DEBUG_TYPE = "refine-args-block-id";
   LLVM_DEBUG(llvm::dbgs() << " [" << DEBUG_TYPE << "] " << __VA_ARGS__)
 
 using namespace mlir::triton;
+
+namespace {
+bool cloneDepSubgraph(Operation *op, Block *forBlock,
+                     SmallVector<Operation *> &clonedOps,
+                     IRMapping &mapping,
+                     int targetBlockId,
+                     CVPipeline::ComputeBlockIdManager &bm) {
+  llvm::SetVector<Operation *> visited;
+  SmallVector<Operation *> worklist;
+
+  visited.insert(op);
+  worklist.push_back(op);
+
+  while (!worklist.empty()) {
+    Operation *cur = worklist.pop_back_val();
+
+    // Skip scalar check for yieldDefOp itself (op), only check upstream deps
+    if (cur != op) {
+      if (cur->getNumResults() != 1 ||
+          !CVPipeline::isScalarLike(cur->getResult(0))) {
+        return false;
+      }
+    }
+
+    // Clone op and establish internal edges via IRMapping
+    Operation *cloned = cur->clone(mapping);
+    bm.updateBlockId(cloned, targetBlockId);
+    cloned->moveBefore(forBlock->getTerminator());
+    clonedOps.push_back(cloned);
+    mapping.map(cur->getResult(0), cloned->getResult(0));
+
+    // Continue tracing upstream dependencies within forBlock
+    for (Value operand : cur->getOperands()) {
+      if (Operation *defOp = operand.getDefiningOp()) {
+        if (defOp->getBlock() == forBlock && visited.insert(defOp)) {
+          worklist.push_back(defOp);
+        }
+      }
+    }
+  }
+
+  // Sort by execution order in target block
+  llvm::sort(clonedOps, [](Operation *l, Operation *r) {
+    return l->isBeforeInBlock(r);
+  });
+  return true;
+}
+} // namespace
 
 int getLoopCarriedArgIndex(Value operand, Block *block) {
   auto barg = dyn_cast<BlockArgument>(operand);
@@ -132,33 +181,54 @@ void processOnefor(scf::ForOp forOp, CVPipeline::ComputeBlockIdManager &bm,
     }
     LOG_DEBUG("yieldDefOp: " << *yieldDefOp << "\n"
                              << "idx: " << i << "\n");
-    if (isDependenceOther(yieldDefOp, forBlock, i, memGraph)) {
+
+    int firstUserBlockId = findFirstUser(argsi, forBlock, bm);
+    LOG_DEBUG("First user block id: " << firstUserBlockId << "\n");
+
+    if (firstUserBlockId == -1) {
       continue;
     }
 
     int updateBlockId = bm.getBlockIdByOp(yieldDefOp);
     LOG_DEBUG("Update block id for yield def op: " << updateBlockId << "\n");
 
-    int firstUserBlockId = findFirstUser(argsi, forBlock, bm);
-    LOG_DEBUG("First user block id: " << firstUserBlockId << "\n");
-
-    if (firstUserBlockId != -1 && updateBlockId != firstUserBlockId) {
-      LOG_DEBUG("Moving update op from block " << updateBlockId << " to block "
-                                               << firstUserBlockId << "\n");
-      bm.updateBlockId(yieldDefOp, firstUserBlockId);
-      // Move yieldDefOp to the end of the first user block
-      auto firstUserOps = bm.getOpsByBlockId(firstUserBlockId);
-      Operation *lastOpInFirstUserBlock = nullptr;
-      for (Operation *op : firstUserOps) {
-        if (!lastOpInFirstUserBlock ||
-            op->isBeforeInBlock(lastOpInFirstUserBlock)) {
-          lastOpInFirstUserBlock = op;
-        }
-      }
-      if (lastOpInFirstUserBlock) {
-        yieldDefOp->moveAfter(lastOpInFirstUserBlock);
-      }
+    if (updateBlockId == firstUserBlockId) {
+      continue;
     }
+
+    IRMapping mapping;
+    SmallVector<Operation *> clonedOps;
+
+    // Clone entire depSubgraph (yieldDefOp + upstream deps) to target block
+    if (!cloneDepSubgraph(yieldDefOp, forBlock, clonedOps, mapping,
+                         firstUserBlockId, bm)) {
+      LOG_DEBUG("Skip iter_arg " << i
+                   << " due to non-scalar dependency\n");
+      continue;
+    }
+
+    // Check if moving would create a cycle
+    if (willCreateCycle(clonedOps, memGraph, firstUserBlockId, bm)) {
+      LOG_DEBUG("Skip iter_arg " << i
+                   << " due to cycle detected\n");
+      for (Operation *cloned : clonedOps) {
+        cloned->erase();
+      }
+      continue;
+    }
+
+    if (isDependenceOther(yieldDefOp, forBlock, i, memGraph)) {
+      for (Operation *cloned : clonedOps) {
+        cloned->erase();
+      }
+      continue;
+    }
+
+    // Update yield to use cloned yieldDefOp result
+    yieldOp.setOperand(i, mapping.lookup(yieldDefOp->getResult(0)));
+
+    // Erase original yieldDefOp (cloned version now serves all uses)
+    yieldDefOp->erase();
   }
 }
 
