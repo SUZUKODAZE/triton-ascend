@@ -689,6 +689,9 @@ static void insertMNEGuardUB(linalg::MatmulOp matmulOp, PatternRewriter &rewrite
   }
   auto elmType = resultType.getElementType();
 
+  // Generate unique tag for this matmul-store pair
+  int coupledId = SplitMatmulPattern::getNextCoupledMatmulAndStoreId();
+
   // Block 1: Create counter memref in SSBUF (addr=11)
   rewriter.setInsertionPoint(forOp);
   auto i32Type = rewriter.getI32Type();
@@ -705,7 +708,9 @@ static void insertMNEGuardUB(linalg::MatmulOp matmulOp, PatternRewriter &rewrite
   auto yieldOp = cast<scf::YieldOp>(forBody->getTerminator());
   rewriter.setInsertionPoint(yieldOp);
   auto c1 = rewriter.create<arith::ConstantIntOp>(loc, 1, 32);
-  rewriter.create<memref::StoreOp>(loc, c1, counterAlloc.getMemref(), ValueRange{});
+  auto storeC1Op = rewriter.create<memref::StoreOp>(loc, c1, counterAlloc.getMemref(), ValueRange{});
+  storeC1Op->setAttr(mlir::CVPipeline::kCoupledMatmulAndStore, rewriter.getI32IntegerAttr(coupledId));
+  matmulOp->setAttr(mlir::CVPipeline::kCoupledMatmulAndStore, rewriter.getI32IntegerAttr(coupledId));
 
   // Block 3: After loop - read counter, create scf.if to select result or zero-fill
   rewriter.setInsertionPointAfter(forOp);
