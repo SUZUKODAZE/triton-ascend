@@ -494,6 +494,15 @@ void OpClassifierPass::matchMaterializePattern(Operation *user) {
 int OpClassifierPass::patternMatchCUBE() {
   LOG_DEBUG("--- Step 1: pattern match --->\n");
 
+  // Mark operations with kCoupledMatmulAndStore tag (MNE counter store) as CUBE
+  for (Operation *op : allOps) {
+    if (op->getAttrOfType<IntegerAttr>(
+            mlir::CVPipeline::kCoupledMatmulAndStore)) {
+      markCube(op);
+      cubeSeeds.push_back(op);
+    }
+  }
+
   for (Operation *op : allOps) {
     if (!isa<linalg::MatmulOp>(op))
       continue;

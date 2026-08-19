@@ -379,7 +379,9 @@ static fixpipeDst getFixpipeDst(Value outValue) {
   };
   if (traceChainUser(outValue, false, matchStoreGm,
                      [](Operation *op, Value value) { return false; })) {
-    return fixpipeDst::GM;
+    // TODO: fixpipeDst::GM should use insertMNEGuardStore (Part B), for now
+    // treat as UB
+    return fixpipeDst::UB;
   }
 
   // Check if result is used as matmul C (bias)
@@ -598,24 +600,6 @@ static bool verifyMatmul(linalg::MatmulOp matmulOp) {
   return true;
 }
 
-// Supports the most common case, where a loop-carried matmul is
-// directly under a not executed for-loop
-static std::optional<SplitInfo> handleMayNotExec(linalg::MatmulOp matmulOp) {
-  auto *parentOp = matmulOp->getBlock()->getParentOp();
-  auto forOp = llvm::dyn_cast<scf::ForOp>(parentOp);
-  auto inputs = parseMatmulInputs(matmulOp);
-  auto bias = inputs.bias;
-  if (!forOp || !scfMayNotExec(forOp)) {
-    return std::nullopt;
-  }
-  auto blockArg = llvm::dyn_cast<BlockArgument>(bias);
-  if (!blockArg || blockArg.getOwner()->getParentOp() != forOp) {
-    return std::nullopt;
-  }
-  auto initVal = forOp.getTiedLoopInit(blockArg)->get();
-  auto result = forOp.getTiedLoopResult(blockArg);
-  return SplitInfo{true, initVal, result, false};
-}
 
 /**
  * Determines whether a matmul operation should be split based on comprehensive
@@ -664,13 +648,6 @@ static std::optional<SplitInfo> shouldSplit(linalg::MatmulOp matmulOp,
     return SplitInfo{mayNotExec, outerInValue, outerOutValue, true};
   }
 
-  if (mayNotExec) {
-    auto splitInfoOpt = handleMayNotExec(matmulOp);
-    if (splitInfoOpt.has_value()) {
-      return splitInfoOpt;
-    }
-  }
-
   if (!shouldSplitByInput(matmulOp, outerOutValue, outerInValue) &&
       !shouldSplitByOutput(matmulOp, outerOutValue, outerInValue)) {
     return SplitInfo{mayNotExec, outerInValue, outerOutValue, false};
@@ -679,10 +656,12 @@ static std::optional<SplitInfo> shouldSplit(linalg::MatmulOp matmulOp,
   return SplitInfo{mayNotExec, outerInValue, outerOutValue, true};
 }
 
-static void insertMNEGuardUB(linalg::MatmulOp matmulOp, PatternRewriter &rewriter,
-                             SplitInfo &splitInfo, scf::ForOp forOp) {
+static void insertMNEGuardUB(linalg::MatmulOp matmulOp,
+                             PatternRewriter &rewriter, SplitInfo &splitInfo,
+                             scf::ForOp forOp) {
   Location loc = forOp.getLoc();
-  auto resultType = dyn_cast<RankedTensorType>(splitInfo.outerOutValue.getType());
+  auto resultType =
+      dyn_cast<RankedTensorType>(splitInfo.outerOutValue.getType());
   if (!resultType) {
     LOG_DEBUG("MNE guard: result is not a RankedTensorType, skip");
     return;
@@ -695,29 +674,35 @@ static void insertMNEGuardUB(linalg::MatmulOp matmulOp, PatternRewriter &rewrite
   // Block 1: Create counter memref in SSBUF (addr=11)
   rewriter.setInsertionPoint(forOp);
   auto i32Type = rewriter.getI32Type();
-  auto ssbufAddrSpaceAttr = rewriter.getAttr<hivm::AddressSpaceAttr>(hivm::AddressSpace::SSBUF);
+  auto ssbufAddrSpaceAttr =
+      rewriter.getAttr<hivm::AddressSpaceAttr>(hivm::AddressSpace::SSBUF);
   auto counterType = MemRefType::get({}, i32Type, nullptr, ssbufAddrSpaceAttr);
   auto counterAlloc = rewriter.create<memref::AllocOp>(loc, counterType);
 
   // Initialize counter to 0 before loop
   auto c0 = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
-  rewriter.create<memref::StoreOp>(loc, c0, counterAlloc.getMemref(), ValueRange{});
+  rewriter.create<memref::StoreOp>(loc, c0, counterAlloc.getMemref(),
+                                   ValueRange{});
 
   // Block 2: Inside loop - write 1 to counter after matmul executes
   auto *forBody = forOp.getBody();
   auto yieldOp = cast<scf::YieldOp>(forBody->getTerminator());
   rewriter.setInsertionPoint(yieldOp);
   auto c1 = rewriter.create<arith::ConstantIntOp>(loc, 1, 32);
-  auto storeC1Op = rewriter.create<memref::StoreOp>(loc, c1, counterAlloc.getMemref(), ValueRange{});
-  storeC1Op->setAttr(mlir::CVPipeline::kCoupledMatmulAndStore, rewriter.getI32IntegerAttr(coupledId));
-  matmulOp->setAttr(mlir::CVPipeline::kCoupledMatmulAndStore, rewriter.getI32IntegerAttr(coupledId));
+  auto storeC1Op = rewriter.create<memref::StoreOp>(
+      loc, c1, counterAlloc.getMemref(), ValueRange{});
+  storeC1Op->setAttr(mlir::CVPipeline::kCoupledMatmulAndStore,
+                     rewriter.getI32IntegerAttr(coupledId));
+  matmulOp->setAttr(mlir::CVPipeline::kCoupledMatmulAndStore,
+                    rewriter.getI32IntegerAttr(coupledId));
 
-  // Block 3: After loop - read counter, create scf.if to select result or zero-fill
+  // Block 3: After loop - read counter, create scf.if to select result or
+  // zero-fill
   rewriter.setInsertionPointAfter(forOp);
-  auto loadCounter =
-      rewriter.create<memref::LoadOp>(loc, counterAlloc.getMemref(), ValueRange{});
+  auto loadCounter = rewriter.create<memref::LoadOp>(
+      loc, counterAlloc.getMemref(), ValueRange{});
   auto hasExec = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ne,
-                                                  loadCounter, c0);
+                                                loadCounter, c0);
 
   // Create zero fill value for else branch (same shape/type as output)
   auto emptyOp = rewriter.create<tensor::EmptyOp>(loc, resultType.getShape(),
@@ -725,12 +710,17 @@ static void insertMNEGuardUB(linalg::MatmulOp matmulOp, PatternRewriter &rewrite
   Value zeroFill;
   if (auto floatType = dyn_cast<FloatType>(elmType)) {
     APFloat zeroAPFloat = APFloat::getZero(floatType.getFloatSemantics());
-    auto zeroVal = rewriter.create<arith::ConstantFloatOp>(loc, floatType, zeroAPFloat).getResult();
-    auto fillOp = rewriter.create<linalg::FillOp>(loc, zeroVal, emptyOp.getResult());
+    auto zeroVal =
+        rewriter.create<arith::ConstantFloatOp>(loc, floatType, zeroAPFloat)
+            .getResult();
+    auto fillOp =
+        rewriter.create<linalg::FillOp>(loc, zeroVal, emptyOp.getResult());
     zeroFill = fillOp.getResult(0);
   } else if (auto intType = dyn_cast<IntegerType>(elmType)) {
-    auto zeroVal = rewriter.create<arith::ConstantIntOp>(loc, intType, 0).getResult();
-    auto fillOp = rewriter.create<linalg::FillOp>(loc, zeroVal, emptyOp.getResult());
+    auto zeroVal =
+        rewriter.create<arith::ConstantIntOp>(loc, intType, 0).getResult();
+    auto fillOp =
+        rewriter.create<linalg::FillOp>(loc, zeroVal, emptyOp.getResult());
     zeroFill = fillOp.getResult(0);
   }
 
@@ -742,12 +732,13 @@ static void insertMNEGuardUB(linalg::MatmulOp matmulOp, PatternRewriter &rewrite
   rewriter.create<scf::YieldOp>(loc, zeroFill);
 
   // Replace uses of outerOutValue except yields
-  splitInfo.outerOutValue.replaceUsesWithIf(ifOp.getResult(0), [&](OpOperand &opnd) {
-    return !isa<scf::YieldOp>(opnd.getOwner());
-  });
+  splitInfo.outerOutValue.replaceUsesWithIf(
+      ifOp.getResult(0),
+      [&](OpOperand &opnd) { return !isa<scf::YieldOp>(opnd.getOwner()); });
 
   // Mark for loop with matmul limited to CUBE
-  forOp->setAttr(mlir::CVPipeline::kHIVMMatmulLimitedInCubeAttr, rewriter.getUnitAttr());
+  forOp->setAttr(mlir::CVPipeline::kHIVMMatmulLimitedInCubeAttr,
+                 rewriter.getUnitAttr());
 }
 
 static LogicalResult splitMatmul(linalg::MatmulOp matmulOp,
@@ -826,32 +817,6 @@ static LogicalResult splitMatmul(linalg::MatmulOp matmulOp,
 
   constexpr size_t kMaxPreservedUsers = 2;
   SmallPtrSet<Operation *, kMaxPreservedUsers> preservedUsers;
-  if (splitInfo.mayNotExec && forOp) {
-    auto lb = forOp.getLowerBound();
-    auto ub = forOp.getUpperBound();
-
-    Value executed =
-        rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sgt, ub, lb);
-    Value zeroValue;
-    if (auto floatType = dyn_cast<FloatType>(elmType)) {
-      APFloat zeroAPFloat = APFloat::getZero(floatType.getFloatSemantics());
-      zeroValue =
-          rewriter.create<arith::ConstantFloatOp>(loc, floatType, zeroAPFloat)
-              .getResult();
-    } else if (auto intType = dyn_cast<IntegerType>(elmType)) {
-      zeroValue =
-          rewriter.create<arith::ConstantIntOp>(loc, intType, 0).getResult();
-    }
-    auto fillOp = rewriter.create<linalg::FillOp>(loc, zeroValue,
-                                                  splitInfo.outerOutValue);
-    auto selectOp = rewriter.create<arith::SelectOp>(
-        loc, executed, splitInfo.outerOutValue, fillOp.getResult(0));
-    newOutValue = selectOp.getResult();
-    preservedUsers.insert(selectOp);
-    preservedUsers.insert(fillOp);
-    forOp->setAttr(CVPipeline::kHIVMMatmulLimitedInCubeAttr,
-                   rewriter.getUnitAttr());
-  }
 
   Operation *addOp;
   if (isa<FloatType>(elmType)) {
@@ -910,17 +875,20 @@ SplitMatmulPattern::matchAndRewrite(linalg::MatmulOp matmulOp,
                                      rewriter.getUnitAttr());
   }
 
-  auto forOp = dyn_cast_if_present<scf::ForOp>(
-      splitInfo.outerOutValue.getDefiningOp());
+  auto forOp =
+      dyn_cast_if_present<scf::ForOp>(splitInfo.outerOutValue.getDefiningOp());
 
   if (splitInfo.shouldSplit) {
-    return splitMatmul(matmulOp, rewriter, splitInfo, forOp);
+    if (failed(splitMatmul(matmulOp, rewriter, splitInfo, forOp))) {
+      return failure();
+    }
   }
 
   if (splitInfo.mayNotExec && forOp) {
     splitInfo.fixpipeDst = getFixpipeDst(splitInfo.outerOutValue);
     if (splitInfo.fixpipeDst == fixpipeDst::UB) {
       insertMNEGuardUB(matmulOp, rewriter, splitInfo, forOp);
+      return success();
     }
   }
 

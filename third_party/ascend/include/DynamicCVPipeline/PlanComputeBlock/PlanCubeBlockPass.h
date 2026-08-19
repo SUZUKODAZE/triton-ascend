@@ -48,7 +48,8 @@ public:
 private:
   SmallVector<Operation *>
   matchSeed(Operation *dotOp, CVPipeline::ComputeBlockIdManager &bm,
-            const CVPipeline::MemoryDependenceGraph &memGraph);
+            const CVPipeline::MemoryDependenceGraph &memGraph,
+            const llvm::DenseMap<int64_t, Operation *> &coupledStoreMap);
   llvm::LogicalResult
   processBlockWithCubeBFS(Block *block,
                           const CVPipeline::MemoryDependenceGraph &memGraph,
