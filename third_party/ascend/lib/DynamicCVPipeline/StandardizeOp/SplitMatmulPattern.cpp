@@ -694,8 +694,11 @@ static void insertMNEGuardUB(linalg::MatmulOp matmulOp,
       getSsbufConstAndPointerCast(rewriter, loc, counterAddr, rewriter.getI32Type());
   Value counterMemref = pointerCastOp.getResult();
 
-  // Initialize counter to 0 before loop
+  // Initialize counter to 0 before loop (no tag, won't be moved)
   auto c0 = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
+  rewriter.create<memref::StoreOp>(loc, c0, counterMemref, ValueRange{});
+
+  // Store 0 with tag (will be moved to appropriate block by later passes)
   auto store0Op = rewriter.create<memref::StoreOp>(loc, c0, counterMemref, ValueRange{});
   store0Op->setAttr(mlir::CVPipeline::kMNEStore0, rewriter.getUnitAttr());
 
