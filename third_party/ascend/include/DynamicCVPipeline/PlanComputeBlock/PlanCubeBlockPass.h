@@ -41,6 +41,15 @@ public:
   void runOnOperation() override;
 
   llvm::StringRef getArgument() const final { return "plan-cube-block"; }
+ private:
+  SmallVector<Operation *>
+  matchSeed(Operation *dotOp, CVPipeline::ComputeBlockIdManager &bm,
+            const CVPipeline::MemoryDependenceGraph &memGraph,
+            const llvm::DenseMap<int64_t, Operation *> &coupledStoreMap);
+  llvm::LogicalResult
+  processBlockWithCubeBFS(Block *block,
+                          const CVPipeline::MemoryDependenceGraph &memGraph,
+                          CVPipeline::ComputeBlockIdManager &bm);
 };
 
 std::unique_ptr<OperationPass<ModuleOp>> createPlanCubeBlockPass();
