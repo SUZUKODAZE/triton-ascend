@@ -416,13 +416,22 @@ static bool checkValidUserSeed(Operation *op, linalg::MatmulOp &preDot) {
   }
   return false;
 }
-
 static SmallVector<Operation *>
 matchSeed(Operation *dotOp, ComputeBlockIdManager &bm,
-          const MemoryDependenceGraph &memGraph) {
+          const MemoryDependenceGraph &memGraph,
+          const llvm::DenseMap<int64_t, Operation *> &coupledStoreMap) {
   // match inputs
   SmallVector<Operation *> ret;
   ret.push_back(dotOp);
+
+  // If matmul has kCoupledMatmulAndStore tag, also include the paired store
+  if (auto coupledId = dotOp->getAttrOfType<IntegerAttr>(
+          mlir::CVPipeline::kCoupledMatmulAndStore)) {
+    if (auto *storeOp = coupledStoreMap.lookup(coupledId.getInt())) {
+      ret.push_back(storeOp);
+    }
+  }
+
   for (Value operand : dotOp->getOperands()) {
     Operation *def = operand.getDefiningOp();
     if (!def)
@@ -463,6 +472,17 @@ processBlockWithCubeBFS(Block *block, const DependencyHelper &depHelper,
   llvm::DenseSet<Operation *> assigned;
   auto allDots = collectMatmulOps(block);
 
+  // Pre-build coupled store map for kCoupledMatmulAndStore
+  llvm::DenseMap<int64_t, Operation *> coupledStoreMap;
+  for (Operation &op : *block) {
+    if (auto coupledId = op.getAttrOfType<IntegerAttr>(
+            mlir::CVPipeline::kCoupledMatmulAndStore)) {
+      if (isa<memref::StoreOp>(op)) {
+        coupledStoreMap[coupledId.getInt()] = &op;
+      }
+    }
+  }
+
   // Phase 1: Add helper ops (transpose, load/store, ptr etc.) to cube block of
   // related matmul
   for (auto *dot : allDots) {
@@ -471,7 +491,7 @@ processBlockWithCubeBFS(Block *block, const DependencyHelper &depHelper,
     }
     auto temBlockId = bm.getNextId();
     llvm::SmallVector<Operation *> dotSeeds =
-        matchSeed(dot, bm, depHelper.memGraph);
+        matchSeed(dot, bm, depHelper.memGraph, coupledStoreMap);
     if (willCreateCycle(dotSeeds, depHelper.memGraph, temBlockId, bm)) {
       LOG_DEBUG("Cube Seed already have a cycle!!");
       for (auto seed : dotSeeds) {
