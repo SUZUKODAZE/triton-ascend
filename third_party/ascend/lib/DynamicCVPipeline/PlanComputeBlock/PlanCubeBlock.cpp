@@ -466,9 +466,9 @@ SmallVector<Operation *> PlanCubeBlockPass::matchSeed(
  * Main entry point: Process a single block by grouping operations into
  * execution blocks using BFS and topological traversal.
  */
-static llvm::LogicalResult
-processBlockWithCubeBFS(Block *block, const DependencyHelper &depHelper,
-                        ComputeBlockIdManager &bm) {
+llvm::LogicalResult PlanCubeBlockPass::processBlockWithCubeBFS(
+    Block *block, const MemoryDependenceGraph &memGraph,
+    ComputeBlockIdManager &bm) {
   llvm::DenseSet<Operation *> assigned;
   auto allDots = collectMatmulOps(block);
 
