@@ -175,6 +175,9 @@ void UBUsageOptPass::buildUBUsageGraph(
     if (canShrink) {
       auto it = cubeBlockId2nodeId.find(blockId);
       if (it != cubeBlockId2nodeId.end()) {
+        LOG_DEBUG("cube-collapse hit: op=" << *op
+                    << " reuse nodeId=" << it->second
+                    << " blockId=" << blockId << "\n");
         op2nodeId[op] = it->second;
         return it->second;
       }
@@ -189,8 +192,18 @@ void UBUsageOptPass::buildUBUsageGraph(
     linkOut.emplace_back();
     linkIn.emplace_back();
 
+    LOG_DEBUG("new node: " << *op
+                << " opName=" << op->getName().getStringRef()
+                << " coreType=" << coreType
+                << " blockId=" << blockId
+                << " nodeId=" << nodeId
+                << " canShrink=" << canShrink
+                << " resultType=" << op->getResult(0).getType() << "\n");
+
     if (canShrink) {
       cubeBlockId2nodeId[blockId] = nodeId;
+      LOG_DEBUG("cube-collapse: blockId=" << blockId << " -> nodeId=" << nodeId
+                  << " firstOp=" << *op << "\n");
     }
     return nodeId;
   };
@@ -285,7 +298,13 @@ void UBUsageOptPass::buildUBUsageGraph(
         }
         if (!visited.contains(std::make_pair(srcNode, dstNode))) {
           LOG_DEBUG("Add SSA edage from " << *srcInBlock << " to " << blockOp
-                                          << "\nweight = " << edgeSize << "\n");
+                                          << "\n  weight = " << edgeSize
+                                          << " fromArg=" << fromArgEdge
+                                          << "\n  src(core=" << nodeCoreType[srcNode]
+                                          << ",blk=" << nodeBlockId[srcNode] << ")"
+                                          << " dst(core=" << nodeCoreType[dstNode]
+                                          << ",blk=" << nodeBlockId[dstNode] << ")"
+                                          << " operandType=" << operand.getType() << "\n");
         }
         addEdge(srcNode, dstNode, edgeSize);
       }
@@ -314,7 +333,11 @@ void UBUsageOptPass::buildUBUsageGraph(
         int srcNode = getOrCreateNodeId(srcInBlock);
         if (!visited.contains(std::make_pair(srcNode, dstNode))) {
           LOG_DEBUG("Add memory edage from " << *srcInBlock << " to " << blockOp
-                                             << "\nweight = " << 0 << "\n");
+                                             << "\n  weight = 0"
+                                             << "\n  src(core=" << nodeCoreType[srcNode]
+                                             << ",blk=" << nodeBlockId[srcNode] << ")"
+                                             << " dst(core=" << nodeCoreType[dstNode]
+                                             << ",blk=" << nodeBlockId[dstNode] << ")\n");
         }
         addEdge(srcNode, dstNode, 0);
       }
@@ -494,7 +517,10 @@ DenseMap<int, int> UBUsageOptPass::collectRecordChange(
       for (int activateNode : activateSet) {
         int64_t originUBSize = sumIncomingLinkSize(
             activateNode, linkIn, linkSize, linkStart, linkEnd, nodeBlockId);
-        LOG_DEBUG("activateNode:" << *nodeId2op.at(activateNode) << "\n");
+        LOG_DEBUG("activateNode:" << *nodeId2op.at(activateNode)
+                    << " (nodeId=" << activateNode
+                    << ",blk=" << nodeBlockId[activateNode]
+                    << ",core=" << nodeCoreType[activateNode] << ")\n");
         LOG_DEBUG("originUBSize:" << originUBSize << "\n");
         int64_t minUBSize = originUBSize;
         SmallVector<int> chain;
@@ -511,11 +537,19 @@ DenseMap<int, int> UBUsageOptPass::collectRecordChange(
             break;
           }
 
+          LOG_DEBUG("  chain extend: " << *nodeId2op.at(curNode)
+                      << " -> " << *nodeId2op.at(uniqueNextNode)
+                      << " (both blk=" << nodeBlockId[uniqueNextNode] << ")\n");
           chain.push_back(uniqueNextNode);
         }
+        LOG_DEBUG("chain length=" << chain.size() << "\n");
         for (auto i = 0; i < chain.size(); i++) {
           auto nowUBSize = 0LL;
-          LOG_DEBUG("now chain op = " << *nodeId2op.at(chain[i]) << "\n");
+          LOG_DEBUG("now chain op = " << *nodeId2op.at(chain[i])
+                      << " (nodeId=" << chain[i]
+                      << ",blk=" << nodeBlockId[chain[i]]
+                      << ",core=" << nodeCoreType[chain[i]]
+                      << ",linkOutSize=" << linkOut[chain[i]].size() << ")\n");
           for (auto cutEdgeId : linkOut[chain[i]]) {
             if (linkSize[cutEdgeId] == MAX_EDGE_SIZE) {
               nowUBSize = MAX_EDGE_SIZE;
@@ -524,11 +558,14 @@ DenseMap<int, int> UBUsageOptPass::collectRecordChange(
               nowUBSize += linkSize[cutEdgeId];
             }
           }
+          LOG_DEBUG("  chain[" << i << "].outEdgeCost=" << nowUBSize << "\n");
           if (nowUBSize < minUBSize) {
             bestCutPointIdx = i + 1;
             minUBSize = nowUBSize;
           }
         }
+        LOG_DEBUG("bestCutPointIdx=" << bestCutPointIdx
+                    << " minUBSize=" << minUBSize << "\n");
 
         if (bestCutPointIdx > 0) {
           // need to change not only chain[i], and chain[i]'s dependency.
@@ -538,6 +575,10 @@ DenseMap<int, int> UBUsageOptPass::collectRecordChange(
             auto dependNodes =
                 findDependency(chain[i], chainPreNode, linkIn, linkStart);
             for (auto node : dependNodes) {
+              LOG_DEBUG("recordChange candidate: node=" << *nodeId2op.at(node)
+                          << " core=" << nodeCoreType[node]
+                          << " blk=" << nodeBlockId[node]
+                          << " -> target=" << optBlockId << "\n");
               if (nodeBlockId[node] != optBlockId) {
                 recordChange[node] = optBlockId;
               }
