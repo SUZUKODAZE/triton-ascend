@@ -167,26 +167,12 @@ void UBUsageOptPass::buildUBUsageGraph(
   // Debug: tag for which call site triggered getOrCreateNodeId
   // ("blockOp-dst", "yield-def", "SSA-src", "MEM-src"). Read by lambda.
   std::string curEntry;
-  // Helper to render core type as a readable string.
-  auto coreTypeName = [&](int ct) -> llvm::StringRef {
-    switch (ct) {
-    case 0: return "UNDETERMINED";
-    case 1: return "VECTOR_ONLY";
-    case 2: return "CUBE_ONLY";
-    case 3: return "CUBE_AND_VECTOR";
-    default: return "UNKNOWN";
-    }
-  };
 
   auto getOrCreateNodeId = [&](Operation *op) -> int {
     if (op2nodeId.find(op) != op2nodeId.end()) {
       int existingId = op2nodeId.at(op);
-      LOG_DEBUG("[NODE-HIT] op=" << *op
-                  << " opName=" << op->getName().getStringRef()
-                  << " existingNodeId=" << existingId
-                  << " | entry="
-                  << (curEntry.empty() ? std::string("?") : curEntry)
-                  << "\n");
+      LOG_DEBUG("[NODE-HIT] op=" << op->getName().getStringRef()
+                  << " existingNodeId=" << existingId << "\n");
       return existingId;
     }
     int coreType = static_cast<int>(CVPipeline::getOpCoreType(op));
@@ -196,21 +182,9 @@ void UBUsageOptPass::buildUBUsageGraph(
     if (canShrink) {
       auto it = cubeBlockId2nodeId.find(blockId);
       if (it != cubeBlockId2nodeId.end()) {
-        LOG_DEBUG("[CUBE-HIT] op=" << *op
-                    << " reuse nodeId=" << it->second
-                    << " blockId=" << blockId
-                    << " | entry=src-of-SSA-or-MEM\n");
-        // Extra dump: confirm all ops sharing this cube-collapsed node
-        // share the same block_id attribute.
-        int cubeCount = 0;
-        for (auto &kv : op2nodeId) {
-          if (kv.second == it->second) ++cubeCount;
-        }
-        LOG_DEBUG("  >> [CUBE-HIT-EXTRA] blockId=" << blockId
-                    << " collapsedNode=" << it->second
-                    << " sharingOpCount=" << cubeCount
-                    << " cubeBlockIdToNodeId=" << blockId << "->"
-                    << it->second << "\n");
+        LOG_DEBUG("[CUBE-HIT] op=" << op->getName().getStringRef()
+                    << " reuseNodeId=" << it->second
+                    << " blockId=" << blockId << "\n");
         op2nodeId[op] = it->second;
         return it->second;
       }
@@ -226,47 +200,21 @@ void UBUsageOptPass::buildUBUsageGraph(
     linkIn.emplace_back();
 
     if (canShrink) {
-      LOG_DEBUG("[CUBE-FIRST] blockId=" << blockId << " -> nodeId=" << nodeId
-                  << " firstOp=" << *op
-                  << " coreType=" << coreType << "(" << coreTypeName(coreType) << ")"
-                  << " | entry="
-                  << (curEntry.empty() ? std::string("blockOp-dst") : curEntry)
-                  << "\n");
-      // Extra dump: print the original ssbuffer.block_id attribute
-      // and the cube block's full op list from the manager.
-      auto attr = op->getAttrOfType<IntegerAttr>(CVPipeline::kBlockId);
-      LOG_DEBUG("  >> [CUBE-FIRST-EXTRA] blockId=" << blockId
-                  << " attrBlockId=" << (attr ? attr.getInt() : -999)
-                  << " bmBlockId=" << blockId
-                  << " opCountInCubeBlock="
-                  << bm.getOpsByBlockId(blockId).size()
-                  << " | firstOp=" << *op << "\n");
+      LOG_DEBUG("[CUBE-FIRST] blockId=" << blockId << " nodeId=" << nodeId
+                  << " op=" << op->getName().getStringRef()
+                  << " coreType=" << coreType << "\n");
       cubeBlockId2nodeId[blockId] = nodeId;
     } else {
-      LOG_DEBUG("[NODE] op=" << *op
-                  << " opName=" << op->getName().getStringRef()
-                  << " coreType=" << coreType << "(" << coreTypeName(coreType) << ")"
+      const char *entryTag = "none";
+      if (curEntry == "blockOp-dst") entryTag = "blockOp-dst";
+      else if (curEntry == "yield-def") entryTag = "yield-def";
+      else if (curEntry == "SSA-src") entryTag = "SSA-src";
+      else if (curEntry == "MEM-src") entryTag = "MEM-src";
+      LOG_DEBUG("[NODE] op=" << op->getName().getStringRef()
+                  << " coreType=" << coreType
                   << " blockId=" << blockId
                   << " nodeId=" << nodeId
-                  << " resultType=" << op->getResult(0).getType()
-                  << " | entry="
-                  << (curEntry.empty() ? std::string("blockOp-dst") : curEntry)
-                  << "\n");
-      // Extra dump for vector nodes: also print attr so we can see if
-      // the vector op somehow carries a cube block_id (串台源头).
-      if (coreType == static_cast<int>(CVPipeline::CoreType::VECTOR_ONLY)) {
-        auto attr = op->getAttrOfType<IntegerAttr>(CVPipeline::kBlockId);
-        int attrVal = attr ? attr.getInt() : -999;
-        LOG_DEBUG("  >> [NODE-EXTRA-V] op=" << *op
-                    << " coreType=VECTOR_ONLY"
-                    << " attrBlockId=" << attrVal
-                    << " bmBlockId=" << blockId);
-        if (attrVal != blockId) {
-          LOG_DEBUG("   !!! MISMATCH: attr(" << attrVal
-                      << ") != bm(" << blockId << ")");
-        }
-        LOG_DEBUG("\n");
-      }
+                  << " entry=" << entryTag << "\n");
     }
     return nodeId;
   };
@@ -447,40 +395,20 @@ void UBUsageOptPass::buildUBUsageGraph(
               << " total edges=" << linkSize.size() << " ====\n");
   for (int i = 0; i < (int)nodeBlockId.size(); ++i) {
     auto it = nodeId2op.find(i);
-    bool hasOp = (it != nodeId2op.end());
-    const char *coreName =
-        nodeCoreType[i] == 1 ? "VECTOR_ONLY"
-        : nodeCoreType[i] == 2 ? "CUBE_ONLY"
-        : nodeCoreType[i] == 3 ? "CUBE_AND_VECTOR"
-        : "UNDETERMINED";
-    if (hasOp) {
+    if (it == nodeId2op.end()) {
       LOG_DEBUG("  [NODE] id=" << i
                   << " blk=" << nodeBlockId[i]
-                  << " core=" << nodeCoreType[i] << "(" << coreName << ")"
-                  << " op=" << *it->second << "\n");
+                  << " core=" << nodeCoreType[i]
+                  << " (DANGLING)\n");
     } else {
       LOG_DEBUG("  [NODE] id=" << i
                   << " blk=" << nodeBlockId[i]
-                  << " core=" << nodeCoreType[i] << "(" << coreName << ")"
-                  << " (DANGLING)\n");
+                  << " core=" << nodeCoreType[i]
+                  << " op=" << it->second->getName().getStringRef() << "\n");
     }
     if (nodeCoreType[i] == cubeCoreType) {
       LOG_DEBUG("    >> [CUBE-EXTRA-NODE] id=" << i
-                  << " blk=" << nodeBlockId[i]
-                  << " | nodeCoreType=CUBE_ONLY, this node should be"
-                  << " untouched by collectRecordChange. Verify it never"
-                  << " appears in [RECORD-DEP] logs.\n");
-    } else if (hasOp &&
-               nodeCoreType[i] == 1) { // VECTOR_ONLY
-      auto attr = it->second->getAttrOfType<IntegerAttr>(CVPipeline::kBlockId);
-      int attrVal = attr ? attr.getInt() : -999;
-      if (attrVal != nodeBlockId[i]) {
-        LOG_DEBUG("    !! [VECTOR-BLOCKID-MISMATCH] id=" << i
-                    << " core=VECTOR_ONLY"
-                    << " bmBlockId=" << nodeBlockId[i]
-                    << " attrBlockId=" << attrVal
-                    << " | this is a core type leak\n");
-      }
+                  << " blk=" << nodeBlockId[i] << "\n");
     }
   }
   for (int e = 0; e < (int)linkSize.size(); ++e) {
@@ -498,8 +426,7 @@ void UBUsageOptPass::buildUBUsageGraph(
                   << " src(core=" << nodeCoreType[linkStart[e]]
                   << ",blk=" << nodeBlockId[linkStart[e]] << ")"
                   << " -> dst(core=" << nodeCoreType[linkEnd[e]]
-                  << ",blk=" << nodeBlockId[linkEnd[e]] << ")"
-                  << " weight=" << linkSize[e] << "\n");
+                  << ",blk=" << nodeBlockId[linkEnd[e]] << ")\n");
     }
   }
   LOG_DEBUG("==== [SUMMARY] end ====\n");
