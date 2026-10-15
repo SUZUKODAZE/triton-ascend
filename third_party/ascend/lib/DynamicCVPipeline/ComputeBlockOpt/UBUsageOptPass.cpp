@@ -32,6 +32,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Block.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
@@ -182,6 +183,17 @@ void UBUsageOptPass::buildUBUsageGraph(
                     << " reuse nodeId=" << it->second
                     << " blockId=" << blockId
                     << " | entry=src-of-SSA-or-MEM\n");
+        // Extra dump: confirm all ops sharing this cube-collapsed node
+        // share the same block_id attribute.
+        int cubeCount = 0;
+        for (auto &kv : op2nodeId) {
+          if (kv.second == it->second) ++cubeCount;
+        }
+        LOG_DEBUG("  >> [CUBE-HIT-EXTRA] blockId=" << blockId
+                    << " collapsedNode=" << it->second
+                    << " sharingOpCount=" << cubeCount
+                    << " cubeBlockIdToNodeId=" << blockId << "->"
+                    << it->second << "\n");
         op2nodeId[op] = it->second;
         return it->second;
       }
@@ -203,6 +215,15 @@ void UBUsageOptPass::buildUBUsageGraph(
                   << " | entry="
                   << (curEntry.empty() ? std::string("blockOp-dst") : curEntry)
                   << "\n");
+      // Extra dump: print the original ssbuffer.block_id attribute
+      // and the cube block's full op list from the manager.
+      auto attr = op->getAttrOfType<IntegerAttr>(kBlockId);
+      LOG_DEBUG("  >> [CUBE-FIRST-EXTRA] blockId=" << blockId
+                  << " attrBlockId=" << (attr ? attr.getInt() : -999)
+                  << " bmBlockId=" << blockId
+                  << " opCountInCubeBlock="
+                  << bm.getOpsByBlockId(blockId).size()
+                  << " | firstOp=" << *op << "\n");
       cubeBlockId2nodeId[blockId] = nodeId;
     } else {
       LOG_DEBUG("[NODE] op=" << *op
@@ -214,6 +235,15 @@ void UBUsageOptPass::buildUBUsageGraph(
                   << " | entry="
                   << (curEntry.empty() ? std::string("blockOp-dst") : curEntry)
                   << "\n");
+      // Extra dump for vector nodes: also print attr so we can see if
+      // the vector op somehow carries a cube block_id (串台源头).
+      if (coreType == static_cast<int>(CVPipeline::CoreType::VECTOR_ONLY)) {
+        auto attr = op->getAttrOfType<IntegerAttr>(kBlockId);
+        LOG_DEBUG("  >> [NODE-EXTRA-V] op=" << *op
+                    << " coreType=" << coreType
+                    << " attrBlockId=" << (attr ? attr.getInt() : -999)
+                    << " bmBlockId=" << blockId << "\n");
+      }
     }
     return nodeId;
   };
@@ -323,6 +353,17 @@ void UBUsageOptPass::buildUBUsageGraph(
                                           << " dst(core=" << nodeCoreType[dstNode]
                                           << ",blk=" << nodeBlockId[dstNode] << ")"
                                           << " operandType=" << operand.getType() << "\n");
+          // Extra dump when the SSA edge crosses cube/vector boundary.
+          if (nodeCoreType[srcNode] == cubeCoreType ||
+              nodeCoreType[dstNode] == cubeCoreType) {
+            LOG_DEBUG("  >> [SSA-EXTRA-CROSS] src=" << *srcInBlock
+                        << " (core=" << nodeCoreType[srcNode]
+                        << ",blk=" << nodeBlockId[srcNode] << ")"
+                        << " dst=" << blockOp
+                        << " (core=" << nodeCoreType[dstNode]
+                        << ",blk=" << nodeBlockId[dstNode] << ")"
+                        << " fromArg=" << fromArgEdge << "\n");
+          }
         }
         addEdge(srcNode, dstNode, edgeSize);
       }
@@ -358,6 +399,16 @@ void UBUsageOptPass::buildUBUsageGraph(
                                              << ",blk=" << nodeBlockId[srcNode] << ")"
                                              << " dst(core=" << nodeCoreType[dstNode]
                                              << ",blk=" << nodeBlockId[dstNode] << ")\n");
+          // Extra dump when the memory edge crosses cube/vector boundary.
+          if (nodeCoreType[srcNode] == cubeCoreType ||
+              nodeCoreType[dstNode] == cubeCoreType) {
+            LOG_DEBUG("  >> [MEM-EXTRA-CROSS] src=" << *srcInBlock
+                        << " (core=" << nodeCoreType[srcNode]
+                        << ",blk=" << nodeBlockId[srcNode] << ")"
+                        << " dst=" << blockOp
+                        << " (core=" << nodeCoreType[dstNode]
+                        << ",blk=" << nodeBlockId[dstNode] << ")\n");
+          }
         }
         addEdge(srcNode, dstNode, 0);
       }
@@ -597,6 +648,8 @@ DenseMap<int, int> UBUsageOptPass::collectRecordChange(
           // need to change not only chain[i], and chain[i]'s dependency.
           for (int i = 0; i < bestCutPointIdx; ++i) {
             LOG_DEBUG("[RECORD-CHAIN] chain[" << i << "]=" << *nodeId2op.at(chain[i])
+                        << " core=" << nodeCoreType[chain[i]]
+                        << " blk=" << nodeBlockId[chain[i]]
                         << " -> target=" << optBlockId << "\n");
             recordChange[chain[i]] = optBlockId;
             auto chainPreNode = i - 1 < 0 ? optNode : chain[i - 1];
@@ -607,6 +660,16 @@ DenseMap<int, int> UBUsageOptPass::collectRecordChange(
                           << " core=" << nodeCoreType[node]
                           << " blk=" << nodeBlockId[node]
                           << " -> target=" << optBlockId << "\n");
+              // Extra dump: cube node pulled into a vector target is the
+              // smoking gun for the V<->C block_id leak. Flag explicitly.
+              if (nodeCoreType[node] == cubeCoreType &&
+                  nodeBlockId[node] != optBlockId) {
+                LOG_DEBUG("  >> [RECORD-DEP-EXTRA-CUBE-LEAK] cubeNode="
+                            << *nodeId2op.at(node)
+                            << " cubeBlk=" << nodeBlockId[node]
+                            << " | will-be-moved-to optBlockId=" << optBlockId
+                            << " (a VECTOR block) | this is the bug\n");
+              }
               if (nodeBlockId[node] != optBlockId) {
                 recordChange[node] = optBlockId;
               }
