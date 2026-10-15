@@ -220,7 +220,7 @@ MergeCubeBlockPass::performMerging(BlockDependencyGraph &graph,
     }
   }
 
-  mergedAny = mergeCount > 0;
+  mergedAny |= (mergeCount > 0);
 
   LDBG("Merged " << mergeCount << " blocks\n");
 
