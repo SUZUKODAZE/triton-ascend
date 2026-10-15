@@ -217,7 +217,7 @@ void UBUsageOptPass::buildUBUsageGraph(
                   << "\n");
       // Extra dump: print the original ssbuffer.block_id attribute
       // and the cube block's full op list from the manager.
-      auto attr = op->getAttrOfType<IntegerAttr>(kBlockId);
+      auto attr = op->getAttrOfType<IntegerAttr>(CVPipeline::kBlockId);
       LOG_DEBUG("  >> [CUBE-FIRST-EXTRA] blockId=" << blockId
                   << " attrBlockId=" << (attr ? attr.getInt() : -999)
                   << " bmBlockId=" << blockId
@@ -238,7 +238,7 @@ void UBUsageOptPass::buildUBUsageGraph(
       // Extra dump for vector nodes: also print attr so we can see if
       // the vector op somehow carries a cube block_id (串台源头).
       if (coreType == static_cast<int>(CVPipeline::CoreType::VECTOR_ONLY)) {
-        auto attr = op->getAttrOfType<IntegerAttr>(kBlockId);
+        auto attr = op->getAttrOfType<IntegerAttr>(CVPipeline::kBlockId);
         LOG_DEBUG("  >> [NODE-EXTRA-V] op=" << *op
                     << " coreType=" << coreType
                     << " attrBlockId=" << (attr ? attr.getInt() : -999)
