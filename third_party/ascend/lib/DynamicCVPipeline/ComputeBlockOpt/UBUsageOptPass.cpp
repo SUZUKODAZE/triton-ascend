@@ -662,7 +662,8 @@ DenseMap<int, int> UBUsageOptPass::collectRecordChange(
                           << " -> target=" << optBlockId << "\n");
               // Extra dump: cube node pulled into a vector target is the
               // smoking gun for the V<->C block_id leak. Flag explicitly.
-              if (nodeCoreType[node] == cubeCoreType &&
+              if (nodeCoreType[node] ==
+                      static_cast<int>(CVPipeline::CoreType::CUBE_ONLY) &&
                   nodeBlockId[node] != optBlockId) {
                 LOG_DEBUG("  >> [RECORD-DEP-EXTRA-CUBE-LEAK] cubeNode="
                             << *nodeId2op.at(node)
