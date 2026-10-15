@@ -686,6 +686,14 @@ DenseMap<int, int> UBUsageOptPass::collectRecordChange(
                             << " | will-be-moved-to optBlockId=" << optBlockId
                             << " (a VECTOR block) | this is the bug\n");
               }
+              // Skip CUBE nodes: a cube op must not be reassigned to a
+              // vector target block (its block_id encodes the cube kernel
+              // boundary and downstream passes rely on it). This is the
+              // 1-line fix for the V<->C block_id leak.
+              if (nodeCoreType[node] ==
+                  static_cast<int>(CVPipeline::CoreType::CUBE_ONLY)) {
+                continue;
+              }
               if (nodeBlockId[node] != optBlockId) {
                 recordChange[node] = optBlockId;
               }
