@@ -415,6 +415,49 @@ void UBUsageOptPass::buildUBUsageGraph(
     });
   }
   LOG_DEBUG("==== buildUBUsageGraph phase: end ====\n");
+
+  // Final summary: dump every node and every edge in one place so the
+  // user can grep without losing vector entries. Cube nodes/edges get
+  // an extra dump (marked with [CUBE-EXTRA]).
+  LOG_DEBUG("==== [SUMMARY] total nodes="
+              << nodeBlockId.size()
+              << " total edges=" << linkSize.size() << " ====\n");
+  for (int i = 0; i < (int)nodeBlockId.size(); ++i) {
+    auto *o = nodeId2op.count(i) ? nodeId2op[i] : nullptr;
+    LOG_DEBUG("  [NODE] id=" << i
+                << " blk=" << nodeBlockId[i]
+                << " core=" << nodeCoreType[i]
+                << (o ? "" : " (DANGLING)")
+                << " op=" << (o ? *o : *((Operation *)nullptr))
+                << "\n");
+    if (nodeCoreType[i] == cubeCoreType) {
+      LOG_DEBUG("    >> [CUBE-EXTRA-NODE] id=" << i
+                  << " blk=" << nodeBlockId[i]
+                  << " | nodeCoreType=CUBE_ONLY, this node should be"
+                  << " untouched by collectRecordChange. Verify it never"
+                  << " appears in [RECORD-DEP] logs.\n");
+    }
+  }
+  for (int e = 0; e < (int)linkSize.size(); ++e) {
+    LOG_DEBUG("  [EDGE] id=" << e
+                << " src=" << linkStart[e]
+                << "(core=" << nodeCoreType[linkStart[e]]
+                << ",blk=" << nodeBlockId[linkStart[e]] << ")"
+                << " -> dst=" << linkEnd[e]
+                << "(core=" << nodeCoreType[linkEnd[e]]
+                << ",blk=" << nodeBlockId[linkEnd[e]] << ")"
+                << " weight=" << linkSize[e] << "\n");
+    if (nodeCoreType[linkStart[e]] == cubeCoreType ||
+        nodeCoreType[linkEnd[e]] == cubeCoreType) {
+      LOG_DEBUG("    >> [CUBE-EXTRA-EDGE] edgeId=" << e
+                  << " src(core=" << nodeCoreType[linkStart[e]]
+                  << ",blk=" << nodeBlockId[linkStart[e]] << ")"
+                  << " -> dst(core=" << nodeCoreType[linkEnd[e]]
+                  << ",blk=" << nodeBlockId[linkEnd[e]] << ")"
+                  << " weight=" << linkSize[e] << "\n");
+    }
+  }
+  LOG_DEBUG("==== [SUMMARY] end ====\n");
 }
 
 static SmallVector<int>
