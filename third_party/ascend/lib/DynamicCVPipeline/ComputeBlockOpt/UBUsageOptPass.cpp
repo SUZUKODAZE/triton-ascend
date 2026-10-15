@@ -805,6 +805,15 @@ void mlir::triton::UBUsageOptPass::runOnOperation() {
   }
 
   LOG_DEBUG("=== Pass UBUsageOpt complete ===\n");
+
+  // Dump full module IR (with all block_id changes applied) for inspection.
+  // Use a separate DEBUG_TYPE so it can be filtered independently.
+  LLVM_DEBUG({
+    static constexpr const char *kDumpType = "ub-usage-opt-dump";
+    llvm::dbgs() << "[" << kDumpType << "] ----- final module after UBUsageOpt -----\n";
+    module.print(llvm::dbgs());
+    llvm::dbgs() << "\n[" << kDumpType << "] ----- end of module -----\n";
+  });
 }
 
 namespace mlir {
