@@ -988,6 +988,86 @@
             "operation_startup_system_cycles": 0,
             "result_dependency_system_cycles": 470,
             "unknown_contention_multiplier": 1
+          },
+          "fadd.f32.loaded_index": {
+            "logical_elements_per_system_cycle": 0.16707,
+            "operation_startup_system_cycles": 0,
+            "result_dependency_system_cycles": 470,
+            "unknown_contention_multiplier": 1,
+            "source": "End-to-end scatter-atomic sweep on Ascend950PR, 56 AIV, one element per 128 B line, 128 to 4096 elements per program. Slope of the measured minimum against the route work, startup from the linear intercept.",
+            "confidence": "medium"
+          },
+          "add.i32.loaded_index": {
+            "logical_elements_per_system_cycle": 0.17079,
+            "operation_startup_system_cycles": 0,
+            "result_dependency_system_cycles": 470,
+            "unknown_contention_multiplier": 1,
+            "source": "End-to-end scatter-atomic sweep on Ascend950PR, 56 AIV, one element per 128 B line, 128 to 4096 elements per program. Slope of the measured minimum against the route work, startup from the linear intercept.",
+            "confidence": "medium"
+          },
+          "max.f32.loaded_index": {
+            "logical_elements_per_system_cycle": 0.175,
+            "operation_startup_system_cycles": 0,
+            "result_dependency_system_cycles": 470,
+            "unknown_contention_multiplier": 1,
+            "source": "End-to-end scatter-atomic sweep on Ascend950PR, 56 AIV, one element per 128 B line. Includes the two-backend factor of two removed by the float min/max pair fusion.",
+            "confidence": "medium"
+          },
+          "max.i32.loaded_index": {
+            "logical_elements_per_system_cycle": 0.175,
+            "operation_startup_system_cycles": 0,
+            "result_dependency_system_cycles": 470,
+            "unknown_contention_multiplier": 1,
+            "source": "End-to-end scatter-atomic sweep on Ascend950PR, 56 AIV, one element per 128 B line. Slope of the measured minimum against the route work, startup from the linear intercept.",
+            "confidence": "medium"
+          },
+          "min.f32.loaded_index": {
+            "logical_elements_per_system_cycle": 0.175,
+            "operation_startup_system_cycles": 0,
+            "result_dependency_system_cycles": 470,
+            "unknown_contention_multiplier": 1,
+            "source": "End-to-end scatter-atomic sweep on Ascend950PR, 56 AIV, one element per 128 B line. Includes the two-backend factor of two removed by the float min/max pair fusion.",
+            "confidence": "medium"
+          },
+          "min.i32.loaded_index": {
+            "logical_elements_per_system_cycle": 0.175,
+            "operation_startup_system_cycles": 0,
+            "result_dependency_system_cycles": 470,
+            "unknown_contention_multiplier": 1,
+            "source": "End-to-end scatter-atomic sweep on Ascend950PR, 56 AIV, one element per 128 B line. Slope of the measured minimum against the route work, startup from the linear intercept.",
+            "confidence": "medium"
+          },
+          "exch.f32.loaded_index": {
+            "logical_elements_per_system_cycle": 0.0844,
+            "operation_startup_system_cycles": 1800,
+            "result_dependency_system_cycles": 470,
+            "unknown_contention_multiplier": 1,
+            "source": "End-to-end scatter-atomic sweep on Ascend950PR, 56 AIV, one element per 128 B line. Slope of the measured minimum against the route work; startup is the linear intercept the operation carries on top of the kernel boundary.",
+            "confidence": "medium"
+          },
+          "exch.i32.loaded_index": {
+            "logical_elements_per_system_cycle": 0.0844,
+            "operation_startup_system_cycles": 1800,
+            "result_dependency_system_cycles": 470,
+            "unknown_contention_multiplier": 1,
+            "source": "End-to-end scatter-atomic sweep on Ascend950PR, 56 AIV, one element per 128 B line. Slope of the measured minimum against the route work; startup is the linear intercept the operation carries on top of the kernel boundary.",
+            "confidence": "medium"
+          },
+          "cas.f32.loaded_index": {
+            "logical_elements_per_system_cycle": 0.0844,
+            "operation_startup_system_cycles": 1800,
+            "result_dependency_system_cycles": 470,
+            "unknown_contention_multiplier": 1,
+            "source": "End-to-end scatter-atomic sweep on Ascend950PR, 56 AIV, one element per 128 B line. Slope of the measured minimum against the route work; startup is the linear intercept the operation carries on top of the kernel boundary.",
+            "confidence": "medium"
+          },
+          "cas.i32.loaded_index": {
+            "logical_elements_per_system_cycle": 0.0844,
+            "operation_startup_system_cycles": 1800,
+            "result_dependency_system_cycles": 470,
+            "unknown_contention_multiplier": 1,
+            "source": "End-to-end scatter-atomic sweep on Ascend950PR, 56 AIV, one element per 128 B line. Slope of the measured minimum against the route work; startup is the linear intercept the operation carries on top of the kernel boundary.",
+            "confidence": "medium"
           }
         }
       },
