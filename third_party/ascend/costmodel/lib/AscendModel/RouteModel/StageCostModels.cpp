@@ -1323,7 +1323,14 @@ mapWorkload(const LogicalStage &stage, const StageModeProfile &profile,
   if (work.scalarStoreCount > 0.0)
     resources.store +=
         simd ? mte3ScalarStoreCycles(profile) : simtUniformStoreCycles(profile);
+  // A loaded-index atomic Stage is priced by estimateStageBase under the
+  // SimtIndirectAtomic kind; skipping the generic atomic pricing here keeps the
+  // two calibrations apart and prevents double counting.
+  const bool atomicPricedByStageKind =
+      stage.costModelKind == StageCostModelKind::SimtIndirectAtomic;
   for (const AtomicWorkload &atomic : work.atomicWorkloads) {
+    if (atomicPricedByStageKind)
+      break;
     const llvm::StringRef addressClass =
         atomic.addressDependsOnLoadedIndex
             ? "loaded_index"
@@ -3022,10 +3029,53 @@ static double estimateStageBase(const LogicalStage &stage,
     return serial;
   case StageCostModelKind::AtomicMemory:
     return serial;
-  case StageCostModelKind::SimtIndirectAtomic:
-    // Structure only for now: the dedicated service formula arrives in the
-    // next change, so the Stage keeps the generic serial body.
-    return serial;
+  case StageCostModelKind::SimtIndirectAtomic: {
+    // Loaded-index atomic service. Each workload pays its per-operation
+    // startup, one service interval per logical element, and the measured
+    // result-dependency latency when the returned value is used. The scatter
+    // offsets feed the service rather than extending it, so the Stage is the
+    // serial body with the atomic term replaced by this service.
+    const StageModeProfile &modeProfile =
+        mode == StageMode::SIMD ? profile.simd : profile.simt;
+    double service = 0.0;
+    for (const AtomicWorkload &atomic : stage.workload.atomicWorkloads) {
+      // GM bitwise atomics have no native instruction. Their reachable drop is
+      // the SoftAccel template, whose service depends on the number of distinct
+      // updated addresses and is left unmodeled; only the two extra
+      // vector-function starts are charged here.
+      if (atomic.kind == "and" || atomic.kind == "or" ||
+          atomic.kind == "xor") {
+        service += 2.0 * r.setup;
+        continue;
+      }
+      const llvm::StringRef addressClass =
+          atomic.addressDependsOnLoadedIndex
+              ? "loaded_index"
+              : (atomic.provenContiguousRunWidth > 1.0 ? "contiguous"
+                                                       : "unknown_address");
+      auto rate = modeProfile.atomicRates.find(atomic.profileKey() + "." +
+                                               addressClass.str());
+      if (rate == modeProfile.atomicRates.end())
+        rate = modeProfile.atomicRates.find(addressClass);
+      if (rate == modeProfile.atomicRates.end())
+        rate = modeProfile.atomicRates.find(atomic.profileKey());
+      if (rate == modeProfile.atomicRates.end())
+        rate = modeProfile.atomicRates.find("default");
+      if (rate == modeProfile.atomicRates.end())
+        continue;
+      const StageAtomicRate &atomicRate = rate->second;
+      double base = atomic.logicalOperationInstances *
+                        atomicRate.operationStartupCycles +
+                    atomic.logicalElements / atomicRate.logicalElementsPerCycle;
+      if (atomic.resultUsed)
+        base += atomic.logicalOperationInstances *
+                atomicRate.resultDependencyCycles;
+      if (atomic.contentionUnknown)
+        base *= atomicRate.unknownContentionMultiplier;
+      service += base;
+    }
+    return r.setup + count * std::max(serialBody(r) + service, r.issue);
+  }
   case StageCostModelKind::IndependentPipelinedLoop:
     if (mode == StageMode::SIMD && permitsSimdOverlap(stage)) {
       const double vectorService =
