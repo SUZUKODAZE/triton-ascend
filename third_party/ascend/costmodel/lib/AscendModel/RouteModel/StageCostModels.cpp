@@ -3022,6 +3022,10 @@ static double estimateStageBase(const LogicalStage &stage,
     return serial;
   case StageCostModelKind::AtomicMemory:
     return serial;
+  case StageCostModelKind::SimtIndirectAtomic:
+    // Structure only for now: the dedicated service formula arrives in the
+    // next change, so the Stage keeps the generic serial body.
+    return serial;
   case StageCostModelKind::IndependentPipelinedLoop:
     if (mode == StageMode::SIMD && permitsSimdOverlap(stage)) {
       const double vectorService =
@@ -3244,6 +3248,8 @@ llvm::StringRef mlir::ascend::stringifyStageCostModel(StageCostModelKind kind) {
     return "indirect_gather_memory";
   case StageCostModelKind::AtomicMemory:
     return "atomic_memory";
+  case StageCostModelKind::SimtIndirectAtomic:
+    return "simt_indirect_atomic";
   case StageCostModelKind::IndependentPipelinedLoop:
     return "independent_pipelined_loop";
   case StageCostModelKind::LoopCarriedRecurrence:

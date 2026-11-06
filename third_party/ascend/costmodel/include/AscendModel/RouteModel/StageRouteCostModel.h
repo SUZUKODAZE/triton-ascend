@@ -183,6 +183,9 @@ struct StageModelFeatures {
   /// Loaded-index outer axes with a proven unit-stride contiguous suffix.
   bool hasPartialContinuousMemory = false;
   bool hasAtomicMemory = false;
+  /// The Stage owns an atomic whose target address depends on a loaded index,
+  /// i.e. the scatter form priced by SimtIndirectAtomic.
+  bool hasIndirectAtomic = false;
   bool hasReduction = false;
   bool hasPrefixScan = false;
   bool hasDot = false;

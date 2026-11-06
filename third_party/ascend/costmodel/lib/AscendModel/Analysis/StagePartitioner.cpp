@@ -2617,6 +2617,18 @@ static double semanticRootEntryMultiplicity(Operation *root) {
   return static_cast<double>(enclosingSplitLoopTripCount(root));
 }
 
+/// True when the tree owns an atomic whose target address depends on a loaded
+/// index, the scatter form priced by SimtIndirectAtomic.
+static bool operationTreeHasIndirectAtomic(Operation *root) {
+  bool found = false;
+  root->walk([&](Operation *operation) {
+    if (operation->getName().getStringRef().starts_with("tt.atomic") &&
+        isLoadedIndexDependentMemoryOp(operation))
+      found = true;
+  });
+  return found;
+}
+
 /// Classify one transitive semantic ownership unit.
 static StageCostModelKind
 classifySemanticRoot(Operation *root,
@@ -2634,7 +2646,9 @@ classifySemanticRoot(Operation *root,
   if (operationTreeHasAnyName(root, {"tt.dot", "tt.dot_scaled"}))
     return StageCostModelKind::CubeRoofline;
   if (operationTreeHasAnyName(root, {"tt.atomic_rmw", "tt.atomic_cas"}))
-    return StageCostModelKind::AtomicMemory;
+    return operationTreeHasIndirectAtomic(root)
+               ? StageCostModelKind::SimtIndirectAtomic
+               : StageCostModelKind::AtomicMemory;
   if (operationTreeHasAnyName(root, {"tt.histogram"}))
     return StageCostModelKind::VectorIssue;
   if (operationTreeHasOnlyPartialContinuousMemory(root, memoryPatterns))
@@ -2678,7 +2692,8 @@ static StageScheduleKind scheduleForSemanticRoot(Operation *root,
   if (kind == StageCostModelKind::IndirectGatherMemory ||
       kind == StageCostModelKind::PartialContinuousTileMemory)
     return StageScheduleKind::PartiallyDependent;
-  if (kind == StageCostModelKind::AtomicMemory)
+  if (kind == StageCostModelKind::AtomicMemory ||
+      kind == StageCostModelKind::SimtIndirectAtomic)
     return StageScheduleKind::PartiallyDependent;
   if (kind == StageCostModelKind::AutoBlockifyLoop ||
       kind == StageCostModelKind::IndependentPipelinedLoop ||
@@ -2808,7 +2823,8 @@ static void deriveLocalSimtScopeTraffic(StagePartition &partition,
   for (LogicalStage &stage : partition.stages) {
     stage.scopeInputTensorBytes = 0;
     stage.scopeOutputTensorBytes = 0;
-    if (stage.costModelKind == StageCostModelKind::AtomicMemory) {
+    if (stage.costModelKind == StageCostModelKind::AtomicMemory ||
+        stage.costModelKind == StageCostModelKind::SimtIndirectAtomic) {
       stage.localSimtMaterializable = false;
       stage.localSuperblockMaterializable = false;
       stage.localSimtFactors.clear();
@@ -2948,6 +2964,8 @@ static int semanticKindPriority(StageCostModelKind kind) {
     return 70;
   case StageCostModelKind::AtomicMemory:
     return 65;
+  case StageCostModelKind::SimtIndirectAtomic:
+    return 66;
   case StageCostModelKind::IndirectScalarMemory:
   case StageCostModelKind::IndirectGatherMemory:
   case StageCostModelKind::PartialContinuousTileMemory:
@@ -3442,8 +3460,10 @@ llvm::Error StageFeatureAnalysis::analyze(
       if (name.starts_with("tt.atomic")) {
         hasMemory = true;
         facts.hasAtomicMemory = true;
-        facts.hasIndirectMemory |= isLoadedIndexDependentMemoryOp(operation);
-        hasOtherIndirectMemory |= isLoadedIndexDependentMemoryOp(operation);
+        const bool indirectAtomic = isLoadedIndexDependentMemoryOp(operation);
+        facts.hasIndirectAtomic |= indirectAtomic;
+        facts.hasIndirectMemory |= indirectAtomic;
+        hasOtherIndirectMemory |= indirectAtomic;
       }
       facts.hasReduction |=
           name == "tt.reduce" || name == "tt.scan" || name == "linalg.reduce";
@@ -3494,6 +3514,8 @@ llvm::Error StageKindClassifier::analyze(StagePartition &partition,
       return facts.hasPartialContinuousMemory;
     case StageCostModelKind::AtomicMemory:
       return facts.hasAtomicMemory;
+    case StageCostModelKind::SimtIndirectAtomic:
+      return facts.hasIndirectAtomic;
     case StageCostModelKind::ContinuousTileMemory:
     case StageCostModelKind::ContinuousTileStore:
     case StageCostModelKind::ContinuousShortLoad:
@@ -3562,6 +3584,8 @@ llvm::Error StageKindClassifier::analyze(StagePartition &partition,
       }
       if (facts.hasLoop)
         return StageCostModelKind::IndependentPipelinedLoop;
+      if (facts.hasIndirectAtomic)
+        return StageCostModelKind::SimtIndirectAtomic;
       if (facts.hasAtomicMemory)
         return StageCostModelKind::AtomicMemory;
       if (facts.hasPartialContinuousMemory)

@@ -49,6 +49,10 @@ enum class StageCostModelKind {
   IndirectScalarMemory,
   IndirectGatherMemory,
   AtomicMemory,
+  /// Loaded-index SIMT atomic service. Priced as a service model (per-operation
+  /// rate, startup and result dependency) rather than as a memory-bandwidth
+  /// model, and kept apart from AtomicMemory so the two calibrations never mix.
+  SimtIndirectAtomic,
   IndependentPipelinedLoop,
   LoopCarriedRecurrence,
   RowwiseReduction,
