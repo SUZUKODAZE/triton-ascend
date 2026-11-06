@@ -4239,26 +4239,33 @@ completeCandidateCosts(const SimdSimtCostReport &report,
                        int64_t kernelArgumentCount) {
   SimdSimtCandidateScores scores = report.candidateCosts;
   const bool routeHasGlobalLoad = hasGlobalLoad(report.stageModel);
-  scores.allSimd +=
+  // The kernel boundary residual and the resource work overlap: a kernel whose
+  // work is smaller than its prologue and epilogue finishes in the boundary
+  // time, not in their sum. Taking the larger of the two keeps the route choice
+  // consistent with the elapsed prediction below.
+  const double fixedSimd =
       routeFixedSystemCycles(profile, kAllSimd, report.stageModel.allSimd,
                              kernelArgumentCount, routeHasGlobalLoad);
-  scores.allSimtOnly +=
+  scores.allSimd = std::max(scores.allSimd, fixedSimd);
+  double fixedSimt =
       routeFixedSystemCycles(profile, kAllSimtOnly, report.stageModel.allSimt,
                              kernelArgumentCount, routeHasGlobalLoad);
   if (auto adjustment = tinyStraightLineSimtMemoryAdjustment(
           report.stageModel, report.stageModel.allSimt,
           profile.kernelTiming.tinyStraightLineSimtMemoryCompletion))
-    scores.allSimtOnly = std::max(0.0, scores.allSimtOnly + *adjustment);
+    fixedSimt += *adjustment;
   if (auto adjustment = simtNonAffineRank1MemoryAdjustment(
           report.stageModel, report.stageModel.allSimt,
           report.sourceLogicalProgramCountHint > 0
               ? report.sourceLogicalProgramCountHint
               : report.logicalProgramCountHint,
           profile.kernelTiming.simtNonAffineRank1MemoryCompletion))
-    scores.allSimtOnly = std::max(0.0, scores.allSimtOnly + *adjustment);
-  scores.mixedSimdSimt +=
+    fixedSimt += *adjustment;
+  scores.allSimtOnly = std::max(scores.allSimtOnly, fixedSimt);
+  const double fixedMixed =
       routeFixedSystemCycles(profile, kMixedSimdSimt, report.stageModel.mixed,
                              kernelArgumentCount, routeHasGlobalLoad);
+  scores.mixedSimdSimt = std::max(scores.mixedSimdSimt, fixedMixed);
   if (report.stageModel.allSimt.diagnostic<bool>(
           "native_indirect_chain_applied"))
     scores.allSimtOnly = report.stageModel.allSimt.diagnostic<double>(
@@ -4298,13 +4305,13 @@ populateSelectedRouteElapsedPrediction(SimdSimtCostReport &report,
   prediction.reason = "generic_stage_resource_formula";
   prediction.calibrationName = "generic_stage_resource_formula_v1";
   prediction.candidate = stringifySimdSimtCandidate(report.decision).str();
-  prediction.formula = "(kernel_boundary_residual_system_cycles("
+  prediction.formula = "max(kernel_boundary_residual_system_cycles("
                        "candidate, superblock_factor, "
                        "runtime_physical_program_count) + "
                        "has_global_load * "
                        "global_load_boundary_residual_system_cycles(route) + "
                        "runtime_argument_setup_system_cycles(route, "
-                       "kernel_argument_count) + "
+                       "kernel_argument_count), "
                        "route_resource_system_cycles) / "
                        "system_counter_frequency_mhz";
   prediction.evidence = profile.kernelTiming.evidence;
@@ -4360,7 +4367,7 @@ populateSelectedRouteElapsedPrediction(SimdSimtCostReport &report,
       profile.kernelTiming.systemCounterFrequencyMHz;
   prediction.baseSelectionScore = baseScore;
   prediction.predictedSystemCounterCycles =
-      prediction.fixedSystemCycles + prediction.baseSelectionScore;
+      std::max(prediction.fixedSystemCycles, prediction.baseSelectionScore);
   prediction.predictedMicroseconds = prediction.predictedSystemCounterCycles /
                                      prediction.systemCounterFrequencyMHz;
   if (plan->diagnostic<bool>("native_indirect_chain_applied")) {
