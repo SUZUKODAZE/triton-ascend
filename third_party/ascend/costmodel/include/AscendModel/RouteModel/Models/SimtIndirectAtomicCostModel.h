@@ -26,9 +26,9 @@ namespace mlir::ascend {
 /// addresses and is deliberately left unmodeled; those workloads contribute
 /// only the two extra vector-function starts the template launches beyond the
 /// one the Stage already paid.
-double simtIndirectAtomicServiceCycles(
-    llvm::ArrayRef<AtomicWorkload> workloads, const StageModeProfile &profile,
-    double stageSetupCycles);
+double simtIndirectAtomicServiceCycles(llvm::ArrayRef<AtomicWorkload> workloads,
+                                       const StageModeProfile &profile,
+                                       double stageSetupCycles);
 
 } // namespace mlir::ascend
 

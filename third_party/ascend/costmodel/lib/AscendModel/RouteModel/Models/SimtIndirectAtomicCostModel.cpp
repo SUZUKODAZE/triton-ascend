@@ -22,9 +22,9 @@
 
 namespace mlir::ascend {
 
-double simtIndirectAtomicServiceCycles(
-    llvm::ArrayRef<AtomicWorkload> workloads, const StageModeProfile &profile,
-    double stageSetupCycles) {
+double simtIndirectAtomicServiceCycles(llvm::ArrayRef<AtomicWorkload> workloads,
+                                       const StageModeProfile &profile,
+                                       double stageSetupCycles) {
   double service = 0.0;
   for (const AtomicWorkload &atomic : workloads) {
     if (atomic.kind == "and" || atomic.kind == "or" || atomic.kind == "xor") {
@@ -47,12 +47,12 @@ double simtIndirectAtomicServiceCycles(
     if (rate == profile.atomicRates.end())
       continue;
     const StageAtomicRate &atomicRate = rate->second;
-    double base = atomic.logicalOperationInstances *
-                      atomicRate.operationStartupCycles +
-                  atomic.logicalElements / atomicRate.logicalElementsPerCycle;
+    double base =
+        atomic.logicalOperationInstances * atomicRate.operationStartupCycles +
+        atomic.logicalElements / atomicRate.logicalElementsPerCycle;
     if (atomic.resultUsed)
-      base += atomic.logicalOperationInstances *
-              atomicRate.resultDependencyCycles;
+      base +=
+          atomic.logicalOperationInstances * atomicRate.resultDependencyCycles;
     if (atomic.contentionUnknown)
       base *= atomicRate.unknownContentionMultiplier;
     service += base;
