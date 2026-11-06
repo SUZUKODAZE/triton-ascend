@@ -1109,7 +1109,7 @@
             "source": "End-to-end scatter-atomic sweep on Ascend950PR, 56 AIV, one element per 128 B line, 512 to 4096 elements per program. Startup and rate are a two-parameter minimax fit of the measured minimum against max(kernel boundary, startup + loads + elements/rate).",
             "confidence": "medium"
           },
-          "add.f16.loaded_index": {
+          "fadd.f16.loaded_index": {
             "logical_elements_per_system_cycle": 0.068571,
             "operation_startup_system_cycles": 4241,
             "result_dependency_system_cycles": 470,
@@ -1117,7 +1117,7 @@
             "source": "End-to-end scatter-atomic sweep on Ascend950PR, 56 AIV, one element per 128 B line, 512 to 4096 elements per program. Startup and rate are a two-parameter minimax fit of the measured minimum against max(kernel boundary, startup + loads + elements/rate).",
             "confidence": "medium"
           },
-          "add.bf16.loaded_index": {
+          "fadd.bf16.loaded_index": {
             "logical_elements_per_system_cycle": 0.066541,
             "operation_startup_system_cycles": 3925,
             "result_dependency_system_cycles": 470,
