@@ -1374,7 +1374,7 @@ llvm::json::Object StageModelFeatures::toJSON() const {
   return result;
 }
 
-std::array<std::pair<llvm::StringRef, double>, 54>
+std::array<std::pair<llvm::StringRef, double>, 56>
 StageResourceCycles::keyedValues() const {
   return {
       {{"setup", setup},
@@ -1445,6 +1445,8 @@ StageResourceCycles::keyedValues() const {
         stridedShortLoadCompletion},
        {"strided_short_store_completion_per_iteration",
         stridedShortStoreCompletion},
+       {"swide_load_completion_per_iteration", swideLoadCompletion},
+       {"swide_store_completion_per_iteration", swideStoreCompletion},
        {"critical_path_per_iteration", criticalPath}}};
 }
 
