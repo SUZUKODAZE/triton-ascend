@@ -78,6 +78,8 @@ bool accumulateAtomicWorkload(StageResourceCycles &resources,
       atomic.contentionUnknown ? atomicRate.unknownContentionMultiplier : 1.0;
   resources.atomic += base * contention;
   resources.singlePhysicalProgramAtomic += singleProgramBase * contention;
+  resources.atomicPerProgram +=
+      atomic.logicalOperationInstances * atomicRate.perPhysicalProgramCycles;
   resources.hasSinglePhysicalProgramAtomicRate |=
       atomicRate.singlePhysicalProgramLogicalElementsPerCycle > 0.0;
   if (atomic.resultUsed) {

@@ -497,6 +497,8 @@ struct StageResourceCycles {
   double atomic = 0.0;
   /// Alternative atomic service for the one-physical-program SIMD regime.
   double singlePhysicalProgramAtomic = 0.0;
+  /// Atomic-only per-additional-physical-program cycles (summed over workloads).
+  double atomicPerProgram = 0.0;
   bool hasSinglePhysicalProgramAtomicRate = false;
   double compute = 0.0;
   /// Serialized backend completion paid once per semantic tensor-operation

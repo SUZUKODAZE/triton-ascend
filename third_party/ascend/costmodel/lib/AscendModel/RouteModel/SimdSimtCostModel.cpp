@@ -2311,6 +2311,8 @@ static void readStageResources(ProfileJSONReader &reader,
       rate.singlePhysicalProgramLogicalElementsPerCycle = reader.optionalNumber(
           object, "single_physical_program_logical_elements_per_system_cycle",
           0.0);
+      rate.perPhysicalProgramCycles = reader.optionalNumber(
+          object, "per_physical_program_system_cycles", 0.0);
       rate.operationStartupCycles =
           reader.number(object, "operation_startup_system_cycles", ratePath);
       rate.resultDependencyCycles =
@@ -4692,17 +4694,30 @@ static RouteFixedCost routeFixedCost(const CandidateProfile &profile,
   const double launch = profile.kernelTiming.boundarySystemCycles(
       route, plan.routeSuperblockFactor, plan.runtimePhysicalProgramCount,
       launchDomain);
+  double atomicPerProgramCycles = 0.0;
+  for (const LogicalStageCost &stage : stageModel.stages) {
+    double stageAtomicPerProgram = 0.0;
+    for (const StageImplementationCost &impl : stage.implementations)
+      stageAtomicPerProgram =
+          std::max(stageAtomicPerProgram, impl.resources.atomicPerProgram);
+    atomicPerProgramCycles += stageAtomicPerProgram;
+  }
+  const double atomicMultiProgramCycles =
+      static_cast<double>(
+          std::max<int64_t>(0, plan.runtimePhysicalProgramCount - 1)) *
+      atomicPerProgramCycles;
+  const double bodyCycles = plan.totalCycles;
   const double launchAndBodyCycles =
-      usesCompletionInclusivePhysicalGroupBody(plan)
-          ? plan.totalCycles +
+      (usesCompletionInclusivePhysicalGroupBody(plan)
+          ? bodyCycles +
                 profile.kernelTiming.boundarySystemCycles(
                     route, plan.routeSuperblockFactor, 1, launchDomain)
       : launchDistributionOverlapsBody(stageModel)
           ? profile.kernelTiming.completeWithLaunchSystemCycles(
                 route, plan.routeSuperblockFactor,
-                plan.runtimePhysicalProgramCount, launchDomain,
-                plan.totalCycles)
-          : plan.totalCycles + launch;
+                plan.runtimePhysicalProgramCount, launchDomain, bodyCycles)
+          : bodyCycles + launch) +
+      atomicMultiProgramCycles;
   const double effectiveLaunchCycles =
       std::max(0.0, launchAndBodyCycles - plan.totalCycles);
   RouteFixedCost cost;

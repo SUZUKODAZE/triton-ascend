@@ -347,10 +347,10 @@
           "intercept_system_cycles": 233.13893010359232,
           "coefficient_system_cycles": [
             0.2451482631596979,
-            99.292319920040171,
+            99.29231992004017,
             0.6014874004037386,
             0.026348222847080462,
-            0.038518219183032401
+            0.0385182191830324
           ],
           "structural_constants": [],
           "evidence": "data_provider/strided_ldst/pre-explore/results/final/errors_masked_store.csv, stride>=3 branch; 384 points (int8/float16/float32, n=4..512, stride=3/4/5/6/8/16/32/64/128, 15 rank-two shapes), MAPE 6.96%. Masked-only: a runtime mask makes the SIMD store read the destination back, so the fit carries an extra 1 KB aggregate term. Worst regime is stride>=32 with n<=16 (40-56%, 15/384 points), see README 3.5(a)."
@@ -559,6 +559,13 @@
             "operation_startup_system_cycles": 0,
             "result_dependency_system_cycles": 470,
             "unknown_contention_multiplier": 1
+          },
+          "add.i32.contiguous": {
+            "logical_elements_per_system_cycle": 2,
+            "operation_startup_system_cycles": 0,
+            "result_dependency_system_cycles": 300,
+            "unknown_contention_multiplier": 1,
+            "per_physical_program_system_cycles": 8.2
           }
         }
       },
@@ -1103,19 +1110,19 @@
         "factor_scale": {
           "rows2": [
             6.8651,
-            13.301600000000001
+            13.3016
           ],
           "rows8": [
-            1.7555000000000001,
+            1.7555,
             5.1448
           ],
           "rows16": [
-            1.4025000000000001,
-            5.5961999999999996
+            1.4025,
+            5.5962
           ],
           "rows64": [
-            2.1575000000000002,
-            8.4451000000000001
+            2.1575,
+            8.4451
           ]
         },
         "description": "Closed-form StridedWide (rank-2, one unit-stride axis, run>=32B, unmasked, inner) completion fits.  Calibrated on the WIDE2/LOADV1 sweeps; a slot is a steady-state per-iteration cost in SYS_CNT nanoseconds (== system cycles at 1 GHz).  Admission is bounded to the swept domain; anything outside keeps the fallback mechanisms. Masked SIMT slots (store and load, rows 2/8/64/W-split and rows16/W-split) are separate linear fits: the measured masked unmasked ratio is only uniform for SIMD (median 1.000, 99.2% within 5%), while the SIMT masked store/load relationship is not a smooth offset, so sharing one formula degraded segment MAPE to 12-22%.",
@@ -1731,14 +1738,15 @@
           "fadd.f32": {
             "logical_elements_per_system_cycle": 4096,
             "operation_startup_system_cycles": 0,
-            "result_dependency_system_cycles": 25775,
+            "result_dependency_system_cycles": 45635.0,
             "unknown_contention_multiplier": 1
           },
           "loaded_index": {
             "logical_elements_per_system_cycle": 1.477,
             "operation_startup_system_cycles": 0,
             "result_dependency_system_cycles": 470,
-            "unknown_contention_multiplier": 1
+            "unknown_contention_multiplier": 1,
+            "per_physical_program_system_cycles": 9.58
           }
         }
       },
